@@ -1,0 +1,17 @@
+[build]
+  command = "npm run build"
+  publish = "dist"
+
+[build.environment]
+  # Note: Set VITE_GEMINI_API_KEY in Netlify Dashboard under Site Settings > Environment Variables
+  # This is just a placeholder to document what's needed
+
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
+
+[[redirects]]
+  from = "/api/gemini/home-coach"
+  to = "/.netlify/functions/home-coach"
+  status = 200
