@@ -397,7 +397,7 @@ export function createLiveCoachGateway(port: number) {
     });
   });
 
-  httpServer.listen(port, () => {
+  httpServer.listen(port, '0.0.0.0', () => {
     console.log(`[LiveCoach] Server listening on :${port}`);
   });
 
