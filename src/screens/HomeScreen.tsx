@@ -1,12 +1,12 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { motion, useSpring, useTransform } from 'framer-motion';
-import { Wifi, Sparkles, Activity, BarChart3 } from 'lucide-react';
+import { Sparkles, Activity, BarChart3 } from 'lucide-react';
 import { NudgeModal } from '../components';
-import { useHomeCoach } from '../coach/useHomeCoach';
+import { CoachTrigger } from '../components/coach/CoachTrigger';
+import type { CoachGate, CoachGateContext } from '../hooks/useCoachGate';
 import { useRecovery } from '../hooks/useRecovery';
-import { fetchDailyWorkoutPlan, defaultWorkoutPlan, type WorkoutPlan } from '../services';
+import { type WorkoutPlan } from '../services';
 import PremiumPlanView from '../components/plan/PremiumPlanView';
-import { PlanInlineSkeleton } from '../components/plan/PlanInlineSkeleton';
 import { convertWorkoutPlanToPlanProps } from '../lib/plan/convertWorkoutPlan';
 import type {
   Profile as RecoveryProfile,
@@ -70,6 +70,9 @@ export interface HomeScreenProps {
   externalRefreshToken?: number;
   onLogAnalyticsEvent?: (event: string, data?: Record<string, unknown>) => void;
   mockState?: Partial<HomeDecisionState>;
+  onWorkoutPlanChange?: (plan: WorkoutPlan | null) => void;
+  coachGate: CoachGate;
+  coachGateContext: CoachGateContext;
 }
 
 const clampScore = (value: number): number => Math.max(0, Math.min(100, Math.round(value)));
@@ -329,14 +332,14 @@ const deriveDecision = (readiness: number, metrics: HomeDecisionMetrics): Decisi
 const recommendedLabelForDecision = (decision: Decision): string =>
   decision === 'train' ? 'Strength Session' : 'Active Recovery • 20–30 min';
 
-export const buildHomeDecisionState = (params: {
+export function buildHomeDecisionState(params: {
   readiness: number | null;
   metrics: HomeDecisionMetrics;
   nextOptimalWindow: string;
   lastSessionSummary: string;
   isLoading: boolean;
   deltaVsLast?: number;
-}): HomeDecisionState => {
+}): HomeDecisionState {
   const readiness = params.readiness != null ? clampScore(params.readiness) : 0;
   const decision = params.isLoading ? 'recovery' : deriveDecision(readiness, params.metrics);
 
@@ -350,7 +353,7 @@ export const buildHomeDecisionState = (params: {
     lastSessionSummary: params.lastSessionSummary,
     isLoading: params.isLoading,
   };
-};
+}
 
 const DecisionHero: React.FC<{
   state: HomeDecisionState;
@@ -535,16 +538,16 @@ const InfoRow: React.FC<{
   </div>
 );
 
+const CTA_LABEL = 'Start Readiness Check';
+
 const StickyPrimaryCTA: React.FC<{
   state: HomeDecisionState;
   disabled: boolean;
   onPress: () => void;
-}> = ({ state, disabled, onPress }) => {
-  const label = state.decision === 'train' ? 'Start Strength Session' : 'Start Active Recovery';
-
+}> = ({ disabled, onPress }) => {
   return (
     <div
-      className="fixed inset-x-0 bottom-0 z-40 border-t border-white/10 bg-slate-950/95 pb-4 pt-3 backdrop-blur-2xl"
+      className="fixed inset-x-0 bottom-0 z-40 flex justify-center border-t border-white/10 bg-slate-950/95 pb-4 pt-3 backdrop-blur-2xl"
       style={{
         paddingBottom: `calc(env(safe-area-inset-bottom, 16px))`,
         paddingLeft: `calc(env(safe-area-inset-left, 0px) + 16px)`,
@@ -555,10 +558,10 @@ const StickyPrimaryCTA: React.FC<{
         type="button"
         onClick={onPress}
         disabled={disabled}
-        className="w-full rounded-full bg-gradient-to-r from-sky-500 via-sky-400 to-emerald-400 px-6 text-base font-semibold text-slate-950 shadow-[0_24px_45px_rgba(56,189,248,0.45)] transition hover:brightness-105 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-200 disabled:cursor-not-allowed disabled:opacity-60"
+        className="w-full max-w-md rounded-full bg-gradient-to-r from-sky-500 via-sky-400 to-emerald-400 px-6 text-base font-semibold text-slate-950 shadow-[0_24px_45px_rgba(56,189,248,0.45)] transition hover:brightness-105 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-200 disabled:cursor-not-allowed disabled:opacity-60"
         style={{ minHeight: 56 }}
       >
-        {label}
+        {CTA_LABEL}
       </button>
     </div>
   );
@@ -581,6 +584,10 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
   onLogAnalyticsEvent,
   externalRefreshToken = 0,
   mockState,
+  onWorkoutPlanChange,
+  prefetchedWorkoutPlan,
+  coachGate,
+  coachGateContext,
 }) => {
   const isAnyConnected =
     sensorStatus.left.status === 'connected' || sensorStatus.right.status === 'connected';
@@ -689,92 +696,36 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
     if (!recoveryEstimate) return null;
     return formatUpcomingSessionTarget(recoveryEstimate.T80h);
   }, [recoveryEstimate]);
-  const {
-    coach: geminiCoach,
-    isLoading: isGeminiCoachLoading,
-    refresh: refreshGeminiCoach,
-    isFallback: isGeminiCoachFallback,
-  } = useHomeCoach({ autoFetch: readinessScore > 50 });
-  const lastRefreshTokenRef = useRef<number>(externalRefreshToken);
   const [workoutPlan, setWorkoutPlan] = useState<WorkoutPlan | null>(null);
-  const [isWorkoutLoading, setIsWorkoutLoading] = useState(false);
-  const [workoutError, setWorkoutError] = useState<string | null>(null);
-  const workoutAbortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
-    if (readinessScore <= 50) return;
-    if (isGeminiCoachLoading) return;
+    setWorkoutPlan(prefetchedWorkoutPlan ?? null);
+  }, [prefetchedWorkoutPlan, homeState.decision, readinessScore]);
 
-    const tokenChanged = lastRefreshTokenRef.current !== externalRefreshToken;
-    if (!tokenChanged && isGeminiCoachFallback) return;
-    const shouldRefresh =
-      tokenChanged || !geminiCoach || (geminiCoach.type !== 'suggestion');
-    if (!shouldRefresh) return;
-
-    lastRefreshTokenRef.current = externalRefreshToken;
-    void refreshGeminiCoach();
-  }, [
-    externalRefreshToken,
-    geminiCoach,
-    isGeminiCoachFallback,
-    isGeminiCoachLoading,
-    readinessScore,
-    refreshGeminiCoach,
-  ]);
+  useEffect(() => {
+    onWorkoutPlanChange?.(workoutPlan ?? null);
+  }, [workoutPlan, onWorkoutPlanChange]);
 
   useEffect(() => {
     return () => {
-      workoutAbortRef.current?.abort();
+      onWorkoutPlanChange?.(null);
     };
-  }, []);
-
-  useEffect(() => {
-    setWorkoutPlan(null);
-    setWorkoutError(null);
-    workoutAbortRef.current?.abort();
-  }, [homeState.decision, readinessScore]);
+  }, [onWorkoutPlanChange]);
 
   const [isWhatIfOpen, setIsWhatIfOpen] = useState(false);
   const [whatIfMessage, setWhatIfMessage] = useState<string | null>(null);
   const [nudgeDismissed, setNudgeDismissed] = useState(false);
   const shownNudgeKeyRef = useRef<string | null>(null);
 
-  const geminiPrimaryLine = useMemo(() => {
-    if (!geminiCoach || geminiCoach.type !== 'suggestion') {
-      return coachFeedback?.coach.line1 ?? null;
-    }
-    return geminiCoach.message?.trim().length ? geminiCoach.message.trim() : coachFeedback?.coach.line1 ?? null;
-  }, [coachFeedback?.coach.line1, geminiCoach]);
-
-  const geminiSecondaryLine = useMemo(() => {
-    if (geminiCoach && geminiCoach.type === 'suggestion') {
-      if (geminiCoach.secondary && geminiCoach.secondary.trim().length) {
-        return geminiCoach.secondary.trim();
-      }
-      if (geminiCoach.cta && geminiCoach.cta.trim().length) {
-        return geminiCoach.cta.trim();
-      }
-    }
-    return coachFeedback?.coach.line2 ?? null;
-  }, [coachFeedback?.coach.line2, geminiCoach]);
-
-  const geminiNudgeMessage = useMemo(() => {
-    if (readinessScore <= 50) return null;
-    if (!geminiCoach || geminiCoach.type !== 'suggestion') return null;
-    if (geminiCoach.mode !== 'TRAIN') return null;
-    const parts = [geminiCoach.message?.trim(), geminiCoach.secondary?.trim()].filter(
-      (part): part is string => Boolean(part && part.length),
-    );
-    if (parts.length === 0) return null;
-    return parts.join(' ');
-  }, [geminiCoach, readinessScore]);
+  const heroPrimaryLine = coachFeedback?.coach.line1 ?? null;
+  const heroSecondaryLine = coachFeedback?.coach.line2 ?? null;
 
   const fallbackNudgeMessage = useMemo(
     () => (readinessScore >= 85 ? computeHighReadinessNudge(readinessScore) : null),
     [readinessScore],
   );
 
-  const activeNudgeMessage = geminiNudgeMessage ?? fallbackNudgeMessage;
+  const activeNudgeMessage = fallbackNudgeMessage;
 
   const nudgeKey = useMemo(() => {
     if (!activeNudgeMessage) return null;
@@ -801,15 +752,12 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
     if (nudgeDismissed || isWhatIfOpen) return;
     if (shownNudgeKeyRef.current === nudgeKey) return;
     if (!activeNudgeMessage) return;
-    if (isGeminiCoachLoading && !geminiNudgeMessage) return;
 
     setWhatIfMessage(activeNudgeMessage);
     setIsWhatIfOpen(true);
     shownNudgeKeyRef.current = nudgeKey;
   }, [
     activeNudgeMessage,
-    geminiNudgeMessage,
-    isGeminiCoachLoading,
     isWhatIfOpen,
     nudgeDismissed,
     nudgeKey,
@@ -842,64 +790,6 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
       shownNudgeKeyRef.current = nudgeKey;
     }
   }, [nudgeKey]);
-
-  const handleShowWorkout = useCallback(async () => {
-    if (isWorkoutLoading) return;
-    workoutAbortRef.current?.abort();
-    const controller = new AbortController();
-    workoutAbortRef.current = controller;
-    setIsWorkoutLoading(true);
-    setWorkoutError(null);
-
-    const ctaAction = coachFeedback?.cta?.action ?? (homeState.decision === 'train' ? 'start_strength' : 'start_recovery');
-    const firstName = userProfile?.name ? userProfile.name.trim().split(/\s+/)[0] ?? null : null;
-
-    try {
-      const plan = await fetchDailyWorkoutPlan(
-        {
-          readiness: readinessScore,
-          metrics: {
-            rmsDropPct: homeState.metrics.rmsDropPct,
-            ror: homeState.metrics.ror,
-            symmetryPct: homeState.metrics.symmetryPct,
-          },
-          ctaAction,
-          recoveryHours: recoveryEstimate?.T80h ?? null,
-          minutesSinceLastSession: timeSinceLastSessionMinutes ?? null,
-          justFinished: Boolean(
-            timeSinceLastSessionMinutes != null && timeSinceLastSessionMinutes <= 20,
-          ),
-          firstName,
-        },
-        { signal: controller.signal },
-      );
-      if (!controller.signal.aborted) {
-        setWorkoutPlan(plan);
-        setIsWorkoutLoading(false);
-        workoutAbortRef.current = null;
-      }
-    } catch (error) {
-      if (error instanceof DOMException && error.name === 'AbortError') {
-        return;
-      }
-      if (!controller.signal.aborted) {
-        setWorkoutPlan(defaultWorkoutPlan);
-        setWorkoutError('Using fallback workout while we reconnect.');
-        setIsWorkoutLoading(false);
-        workoutAbortRef.current = null;
-      }
-    }
-  }, [
-    coachFeedback?.cta?.action,
-    homeState.decision,
-    homeState.metrics,
-    isWorkoutLoading,
-    readinessScore,
-    recoveryEstimate,
-    timeSinceLastSessionMinutes,
-    recentSession,
-    userProfile?.name,
-  ]);
 
   return (
     <div className="relative flex h-full flex-col overflow-hidden pb-32">
@@ -936,8 +826,8 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
           state={homeState}
           onWhy={onOpenCoachChat}
           coachLines={{
-            line1: geminiPrimaryLine ?? coachFeedback?.coach.line1 ?? null,
-            line2: geminiSecondaryLine ?? coachFeedback?.coach.line2 ?? null,
+            line1: heroPrimaryLine,
+            line2: heroSecondaryLine,
           }}
           nextOptimalLabel={recoveryNextOptimalLabel}
         />
@@ -948,28 +838,21 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
           onViewProgress={onViewProgress}
           onViewHistory={onViewHistory}
         />
-        <div className="w-full max-w-md space-y-2.5">
-          {!workoutPlan && (
-            <button
-              type="button"
-              onClick={handleShowWorkout}
-              disabled={isWorkoutLoading}
-              className="w-full rounded-xl border border-zinc-700/60 bg-zinc-900/40 px-4 py-2.5 text-xs font-semibold text-zinc-200 transition hover:border-zinc-600 hover:bg-zinc-800/60 hover:text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-zinc-500 disabled:opacity-60 disabled:cursor-not-allowed"
-            >
-              {isWorkoutLoading ? 'Designing workout…' : "Show today's workout"}
-            </button>
-          )}
-          {workoutError && (
-            <p className="text-[10px] text-rose-300/80 px-1">{workoutError}</p>
-          )}
-          {isWorkoutLoading && <PlanInlineSkeleton />}
-          {!isWorkoutLoading && workoutPlan && (
+        {workoutPlan ? (
+          <div className="w-full max-w-md space-y-2.5">
             <PremiumPlanView {...convertWorkoutPlanToPlanProps(workoutPlan)} />
-          )}
-        </div>
+          </div>
+        ) : null}
       </main>
 
       <StickyPrimaryCTA state={homeState} disabled={homeState.isLoading} onPress={handlePrimaryAction} />
+      {coachGate?.canOpen ? (
+        <CoachTrigger
+          ctx={coachGateContext}
+          onOpen={onOpenCoachChat}
+          style={{ bottom: 'calc(env(safe-area-inset-bottom, 16px) + 84px)' }}
+        />
+      ) : null}
       <NudgeModal
         isOpen={isWhatIfOpen && Boolean(whatIfMessage)}
         readiness={readinessScore}

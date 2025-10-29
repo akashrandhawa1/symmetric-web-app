@@ -3,6 +3,15 @@ import { useSyncExternalStore } from 'react';
 export type CoachContextPhase = 'intro' | 'warmup' | 'work' | 'rest' | 'cooldown' | 'summary';
 export type CoachGoal = 'build_strength' | 'recovery';
 
+export type CoachSessionSummary = {
+  date: string | number;
+  readinessPre: number;
+  readinessPost: number;
+  effectiveReps: number;
+  balanceScore: number;
+  exercises?: string[];
+};
+
 export type CoachContext = {
   readiness: number;
   sessionPhase: CoachContextPhase;
@@ -22,6 +31,7 @@ export type CoachContext = {
     tired?: boolean;
     pain?: boolean;
   };
+  sessionHistory?: CoachSessionSummary[];
 };
 
 export type CoachEventType =

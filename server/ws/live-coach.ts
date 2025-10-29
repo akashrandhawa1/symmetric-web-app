@@ -9,6 +9,15 @@ import 'dotenv/config';
 import { createServer } from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
 
+type CoachSessionSummary = {
+  date: string | number;
+  readinessPre: number;
+  readinessPost: number;
+  effectiveReps: number;
+  balanceScore: number;
+  exercises?: string[];
+};
+
 type CoachContext = {
   readiness: number;
   sessionPhase: string;
@@ -28,6 +37,7 @@ type CoachContext = {
     tired?: boolean;
     pain?: boolean;
   };
+  sessionHistory?: CoachSessionSummary[];
 };
 
 type CoachEvent = {
@@ -45,6 +55,7 @@ type ClientSession = {
   context?: CoachContext;
   events: CoachEvent[];
   contextPrimedToken: number;
+  lastContextSummary?: string | null;
 };
 
 const formatNumber = (value?: number | null, suffix = ''): string | null => {
@@ -55,6 +66,8 @@ const formatNumber = (value?: number | null, suffix = ''): string | null => {
 const summariseContext = (ctx?: CoachContext, events: CoachEvent[] = []): string | null => {
   if (!ctx) return null;
   const lines: string[] = [];
+
+  // Current state
   lines.push(`Context: phase=${ctx.sessionPhase}; readiness=${Math.round(ctx.readiness)}; goal=${ctx.goal ?? 'build_strength'}`);
   const symmetry = formatNumber(ctx.metrics?.symmetryPct, '%');
   const fatigue = formatNumber(ctx.metrics?.rmsDropPct, '%');
@@ -70,20 +83,53 @@ const summariseContext = (ctx?: CoachContext, events: CoachEvent[] = []): string
     if (typeof rpe === 'number') parts.push(`RPE ${rpe}`);
     lines.push(parts.join(', '));
   }
+
+  // Session history (last 2 workouts for speed)
+  if (ctx.sessionHistory && ctx.sessionHistory.length > 0) {
+    lines.push('');
+    lines.push('Recent workouts:');
+    ctx.sessionHistory.slice(-2).reverse().forEach((session) => {
+      // Parse date
+      let timestampMs = Date.now();
+      if (typeof session.date === 'number') {
+        timestampMs = session.date > 10000000000 ? session.date : session.date * 1000;
+      } else if (typeof session.date === 'string') {
+        timestampMs = new Date(session.date).getTime();
+      }
+
+      const daysAgo = Math.floor((Date.now() - timestampMs) / (1000 * 60 * 60 * 24));
+      const timeLabel = daysAgo === 0 ? 'today' : daysAgo === 1 ? 'yesterday' : `${daysAgo}d ago`;
+
+      const parts: string[] = [timeLabel];
+      parts.push(`readiness ${session.readinessPre}→${session.readinessPost}`);
+      if (session.effectiveReps > 0) parts.push(`${session.effectiveReps} effective reps`);
+      if (session.balanceScore > 0) parts.push(`balance ${Math.round(session.balanceScore)}%`);
+
+      lines.push(`• ${parts.join(', ')}`);
+    });
+  }
+
+  // Recent events (less important now that we have session history)
   if (events.length) {
     const eventLines = events
-      .slice(-5)
-      .map((event) => `• ${event.type}${event.payload ? ` ${JSON.stringify(event.payload)}` : ''}`);
-    lines.push('Recent events:');
-    lines.push(...eventLines);
+      .slice(-2)
+      .map((event) => `• ${event.type}`);
+    if (eventLines.length > 0) {
+      lines.push('');
+      lines.push('Recent events:');
+      lines.push(...eventLines);
+    }
   }
-  return lines.join('\n');
+
+  const summary = lines.join('\n');
+  return summary.length > 800 ? `${summary.slice(0, 800)}…` : summary;
 };
 
 const primeGeminiWithContext = (session: ClientSession) => {
   if (!session.geminiWs || session.geminiWs.readyState !== WebSocket.OPEN) return;
   const summary = summariseContext(session.context, session.events);
-  if (!summary) return;
+  if (!summary || summary === session.lastContextSummary) return;
+  session.lastContextSummary = summary;
   session.contextPrimedToken += 1;
   session.geminiWs.send(
     JSON.stringify({
@@ -111,17 +157,20 @@ const updateSessionContext = (session: ClientSession, context?: CoachContext, ev
 
 const SYSTEM_INSTRUCTION = {
   parts: [{
-    text: `You are a warm, encouraging strength training coach.
+    text: `You are Symmetric's AI coach for leg training. Be specific and decisive using the data provided.
 
-Guidelines:
-- Keep responses concise (1-3 sentences)
-- Use natural, conversational language
-- Be encouraging but honest about training advice
-- Ask clarifying questions when needed
-- Reference the user's context (readiness, recent exercises, fatigue)
-- No medical diagnosis or injury treatment
+Decision guide:
+• Readiness ≥80 + fatigue <15% → 3 sets at 75-80%, 8-10 reps, rest 2min
+• Readiness 60-79 → 1-2 quality sets at 70%
+• Readiness <60 or fatigue >25% → active recovery (light cardio + mobility 20-30min)
 
-Your goal is to help the user train effectively while managing recovery and avoiding injury.`
+Rules:
+- Use specific numbers from context (readiness, reps, balance)
+- Don't ask questions - make recommendations
+- Reference past sessions when available
+- Format: [exercise] x [sets] sets of [reps] reps at [load%], rest [time]
+
+Keep responses under 60 words. No medical advice or singing/voice training.`
   }]
 };
 
@@ -192,29 +241,30 @@ export function createLiveCoachGateway(port: number) {
           // Transform Gemini Live API format to our client format
           if (message.setupComplete) {
             clientWs.send(JSON.stringify({ type: 'ready' }));
-          } else if (message.serverContent?.modelTurn) {
+          }
+
+          if (message.serverContent?.modelTurn) {
             const turn = message.serverContent.modelTurn;
 
-            // Handle transcription (what user said)
             if (turn.parts) {
               for (const part of turn.parts) {
                 if (part.text) {
                   clientWs.send(JSON.stringify({
                     type: 'final_stt',
-                    text: part.text
+                    text: part.text,
                   }));
                 }
 
-                // Handle audio response
                 if (part.inlineData?.mimeType?.startsWith('audio/pcm')) {
-                  // Gemini sends base64 encoded PCM audio (24kHz)
                   console.log('[LiveCoach] Sending audio to client, size:', part.inlineData.data.length);
                   const audioData = Buffer.from(part.inlineData.data, 'base64');
                   clientWs.send(audioData);
                 }
               }
             }
-          } else if (message.serverContent?.turnComplete) {
+          }
+
+          if (message.serverContent?.turnComplete) {
             clientWs.send(JSON.stringify({ type: 'assistant_audio_end' }));
           }
         } catch (err) {

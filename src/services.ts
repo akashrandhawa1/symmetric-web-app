@@ -10,8 +10,9 @@ export function saveCoachDecision({ sessionId, setIdx, phase, suggestionId, why 
     // For now, just log
     console.log("saveCoachDecision", { sessionId, setIdx, phase, suggestionId, why });
 }
-import { GoogleGenAI, Type } from "@google/genai";
+import { Type } from "@google/genai";
 import { STORAGE_KEY, RECOVERY_THRESHOLD } from "./constants";
+import { resolveGeminiApiKey } from "./lib/geminiKey";
 import type {
     CompletedSet,
     ChatMessage,
@@ -39,6 +40,44 @@ const FALLBACK_ANALYSIS = {
         "How do I get stronger from here?",
     ],
 };
+
+const QUAD_EXERCISE_IDS = new Set([
+    'heel_elevated_front_squat',
+    'rear_foot_split_squat',
+    'sled_push',
+    'high_bar_back_squat',
+    'single_leg_press',
+    'leg_extension_iso',
+    'goblet_box_squat',
+    'reverse_lunge_slider',
+    'bike_flush',
+    'barbell_back_squat',
+    'barbell_front_squat',
+    'barbell_safety_squat',
+    'trap_bar_deadlift_quads',
+    'smith_machine_front_squat',
+    'smith_machine_split_squat',
+    'split_squat_iso',
+    'pistol_box_squat',
+    'walking_lunge_db',
+    'step_up_bench',
+    'leg_press_wide',
+    'leg_extension',
+    'wall_sit_isometric',
+]);
+
+const QUAD_KEYWORDS = [
+    'squat',
+    'lunge',
+    'split',
+    'leg',
+    'step',
+    'extension',
+    'press',
+    'quad',
+    'wall sit',
+    'bike',
+];
 
 export type HomeRecommendation = {
     title: string;
@@ -99,6 +138,9 @@ export type WorkoutPlan = {
         };
         assumptions: string[];
         expect_label: boolean;
+        readiness_before?: number;
+        readiness_after?: number;
+        block_cost?: number;
     }>;
     alternatives: Array<{
         for_block: string;
@@ -109,6 +151,12 @@ export type WorkoutPlan = {
         }>;
     }>;
     telemetry_focus: string[];
+    projected?: {
+        readinessBefore: number;
+        readinessAfter: number;
+        delta: number;
+    };
+    mode?: "strength" | "readiness_training" | "off_day";
 };
 
 export interface CoachPromptLastSessionContext {
@@ -382,6 +430,331 @@ const tryParseJsonObject = (raw: string | null | undefined): any | null => {
     return null;
 };
 
+type GeminiDisableContext = {
+    code: string;
+    message: string;
+    at?: number;
+    fingerprint?: string;
+};
+
+const GEMINI_DISABLED_STORAGE_KEY = '__GEMINI_DISABLED__';
+const GEMINI_DISABLE_TTL_MS = 10 * 60 * 1000;
+
+const coerceGeminiDisableContext = (value: unknown): GeminiDisableContext | null => {
+    if (!value || typeof value !== 'object') {
+        return null;
+    }
+    const candidate = value as any;
+    const code = typeof candidate.code === 'string' ? candidate.code : undefined;
+    const message = typeof candidate.message === 'string' ? candidate.message : undefined;
+    const at =
+        typeof candidate.at === 'number' && Number.isFinite(candidate.at) ? candidate.at : undefined;
+    const fingerprint = typeof candidate.fingerprint === 'string' ? candidate.fingerprint : undefined;
+    if (!code || !message) {
+        return null;
+    }
+    return { code, message, at, fingerprint };
+};
+
+const fingerprintGeminiKey = (key: string): string => {
+    let hash = 0;
+    for (let i = 0; i < key.length; i += 1) {
+        hash = (hash * 31 + key.charCodeAt(i)) >>> 0;
+    }
+    return hash.toString(16);
+};
+
+const clearPersistedGeminiDisableContext = () => {
+    if (typeof localStorage !== 'undefined') {
+        try {
+            localStorage.removeItem(GEMINI_DISABLED_STORAGE_KEY);
+        } catch {
+            // ignore storage cleanup errors
+        }
+    }
+    if (typeof globalThis !== 'undefined' && (globalThis as any).__GEMINI_DISABLED__) {
+        delete (globalThis as any).__GEMINI_DISABLED__;
+    }
+};
+
+const validateGeminiDisableContext = (
+    context: GeminiDisableContext | null,
+    currentFingerprint?: string | null,
+): GeminiDisableContext | null => {
+    if (!context) {
+        return null;
+    }
+    if (context.at && Date.now() - context.at > GEMINI_DISABLE_TTL_MS) {
+        clearPersistedGeminiDisableContext();
+        return null;
+    }
+    if (currentFingerprint && context.fingerprint && context.fingerprint !== currentFingerprint) {
+        clearPersistedGeminiDisableContext();
+        return null;
+    }
+    return context;
+};
+
+const getRuntimeDisabledContext = (currentFingerprint?: string | null): GeminiDisableContext | null => {
+    if (typeof globalThis !== 'undefined') {
+        const runtime = validateGeminiDisableContext(
+            coerceGeminiDisableContext((globalThis as any).__GEMINI_DISABLED__),
+            currentFingerprint,
+        );
+        if (runtime) {
+            return runtime;
+        }
+    }
+    if (typeof localStorage !== 'undefined') {
+        try {
+            const persisted = localStorage.getItem(GEMINI_DISABLED_STORAGE_KEY);
+            if (persisted) {
+                const parsed = JSON.parse(persisted);
+                const context = validateGeminiDisableContext(
+                    coerceGeminiDisableContext(parsed),
+                    currentFingerprint,
+                );
+                if (context) {
+                    if (typeof globalThis !== 'undefined') {
+                        (globalThis as any).__GEMINI_DISABLED__ = context;
+                    }
+                    return context;
+                }
+            }
+        } catch (error) {
+            console.warn('Failed to read persisted Gemini disable context:', error);
+        }
+    }
+    return null;
+};
+
+let currentGeminiKeyFingerprint: string | null = (() => {
+    const key = resolveGeminiApiKey();
+    return key ? fingerprintGeminiKey(key) : null;
+})();
+
+let geminiDisabled: GeminiDisableContext | null = getRuntimeDisabledContext(currentGeminiKeyFingerprint);
+
+const markGeminiDisabled = (code: string, message: string) => {
+    const fingerprint = currentGeminiKeyFingerprint ?? (() => {
+        const key = resolveGeminiApiKey();
+        return key ? fingerprintGeminiKey(key) : undefined;
+    })();
+    const context: GeminiDisableContext = { code, message, at: Date.now(), fingerprint };
+    if (
+        geminiDisabled &&
+        geminiDisabled.code === context.code &&
+        geminiDisabled.message === context.message &&
+        geminiDisabled.fingerprint === context.fingerprint
+    ) {
+        return;
+    }
+    geminiDisabled = context;
+    if (typeof globalThis !== 'undefined') {
+        (globalThis as any).__GEMINI_DISABLED__ = context;
+    }
+    if (typeof localStorage !== 'undefined') {
+        try {
+            localStorage.setItem(GEMINI_DISABLED_STORAGE_KEY, JSON.stringify(context));
+        } catch (error) {
+            console.warn('Failed to persist Gemini disable context:', error);
+        }
+    }
+    geminiClient = null;
+    console.warn(`[Gemini] Disabled (${code}): ${message}`);
+};
+
+const detectGeminiCredentialError = (error: unknown) => {
+    if (geminiDisabled) {
+        return;
+    }
+
+    const structuralCandidates: unknown[] = [];
+    const textCandidates: string[] = [];
+
+    if (typeof error === 'string') {
+        textCandidates.push(error);
+    } else if (error && typeof error === 'object') {
+        structuralCandidates.push(error);
+    }
+
+    if (error instanceof Error && typeof error.message === 'string') {
+        textCandidates.push(error.message);
+    }
+
+    const inspectStructured = (value: unknown): boolean => {
+        if (!value || typeof value !== 'object') {
+            return false;
+        }
+        const target = (value as any).error ?? value;
+        const message = typeof target?.message === 'string' ? target.message : undefined;
+        if (message) {
+            const lower = message.toLowerCase();
+            if (
+                lower.includes('api key not valid') ||
+                lower.includes('invalid api key') ||
+                lower.includes('api_key_invalid')
+            ) {
+                markGeminiDisabled('API_KEY_INVALID', message);
+                return true;
+            }
+        }
+
+        const reason =
+            typeof target?.reason === 'string'
+                ? target.reason
+                : typeof target?.status === 'string'
+                  ? target.status
+                  : undefined;
+        if (reason && reason.toUpperCase().includes('API_KEY')) {
+            markGeminiDisabled(reason.toUpperCase(), message ?? reason);
+            return true;
+        }
+
+        const details = Array.isArray(target?.details)
+            ? target.details
+            : Array.isArray(target?.error?.details)
+              ? target.error.details
+              : null;
+        if (details) {
+            for (const detail of details) {
+                if (inspectStructured(detail)) {
+                    return true;
+                }
+                const detailReason =
+                    typeof (detail as any)?.reason === 'string'
+                        ? (detail as any).reason
+                        : typeof (detail as any)?.metadata?.reason === 'string'
+                          ? (detail as any).metadata.reason
+                          : undefined;
+                if (detailReason && detailReason.toUpperCase().includes('API_KEY')) {
+                    markGeminiDisabled(detailReason.toUpperCase(), detailReason);
+                    return true;
+                }
+            }
+        }
+
+        try {
+            const serialised = JSON.stringify(target);
+            if (serialised && serialised.toLowerCase().includes('api_key')) {
+                markGeminiDisabled('API_KEY_INVALID', message ?? 'Gemini API key invalid');
+                return true;
+            }
+        } catch {
+            // ignore JSON serialisation issues
+        }
+
+        return false;
+    };
+
+    for (const candidate of structuralCandidates) {
+        if (inspectStructured(candidate)) {
+            return;
+        }
+    }
+
+    for (const text of textCandidates) {
+        const lower = text.toLowerCase();
+        if (
+            lower.includes('api key not valid') ||
+            lower.includes('invalid api key') ||
+            lower.includes('api_key_invalid')
+        ) {
+            markGeminiDisabled('API_KEY_INVALID', text);
+            return;
+        }
+        const parsed = tryParseJsonObject(text);
+        if (parsed && inspectStructured(parsed)) {
+            return;
+        }
+    }
+};
+
+const coerceRuntimeBoolean = (value: unknown): boolean | undefined => {
+    if (value === null || value === undefined) return undefined;
+    if (typeof value === 'boolean') return value;
+    if (typeof value === 'number') return value !== 0;
+    if (typeof value === 'string') {
+        const trimmed = value.trim().toLowerCase();
+        if (!trimmed) return undefined;
+        if (['0', 'false', 'no', 'off'].includes(trimmed)) return false;
+        if (['1', 'true', 'yes', 'on'].includes(trimmed)) return true;
+        return true;
+    }
+    return Boolean(value);
+};
+
+const resolveBooleanFlag = (
+    runtimeKey: string,
+    envKey: string | undefined,
+    fallbackEnvKey?: string,
+    defaultValue = false,
+): boolean => {
+    if (typeof globalThis !== 'undefined') {
+        const runtimeValue = (globalThis as any)[runtimeKey];
+        const runtimeCoerced = coerceRuntimeBoolean(runtimeValue);
+        if (runtimeCoerced !== undefined) return runtimeCoerced;
+    }
+
+    if (typeof import.meta !== 'undefined' && (import.meta as any).env) {
+        const envValue = envKey ? (import.meta as any).env[envKey] : undefined;
+        const envCoerced = coerceRuntimeBoolean(envValue);
+        if (envCoerced !== undefined) return envCoerced;
+
+        if (fallbackEnvKey) {
+            const fallbackValue = (import.meta as any).env[fallbackEnvKey];
+            const fallbackCoerced = coerceRuntimeBoolean(fallbackValue);
+            if (fallbackCoerced !== undefined) return fallbackCoerced;
+        }
+    }
+
+    if (typeof process !== 'undefined' && process.env) {
+        const procValue = envKey ? process.env[envKey] : undefined;
+        const procCoerced = coerceRuntimeBoolean(procValue);
+        if (procCoerced !== undefined) return procCoerced;
+
+        if (fallbackEnvKey) {
+            const procFallback = process.env[fallbackEnvKey];
+            const procFallbackCoerced = coerceRuntimeBoolean(procFallback);
+            if (procFallbackCoerced !== undefined) return procFallbackCoerced;
+        }
+    }
+
+    return defaultValue;
+};
+
+const isQuadBlock = (block: WorkoutPlan['blocks'][number] | undefined): boolean => {
+    if (!block || !block.exercise) return false;
+    const id = typeof block.exercise.id === 'string' ? block.exercise.id.toLowerCase() : '';
+    if (id && QUAD_EXERCISE_IDS.has(id)) return true;
+    if (block.exercise.quad_dominant === true) return true;
+    const name = typeof block.exercise.name === 'string' ? block.exercise.name.toLowerCase() : '';
+    if (name && QUAD_KEYWORDS.some((keyword) => name.includes(keyword))) return true;
+    return false;
+};
+
+const enforceQuadFocus = (plan: WorkoutPlan, fallback: WorkoutPlan): WorkoutPlan => {
+    const fallbackBlocks = fallback.blocks;
+    let replaced = false;
+    const adjusted = plan.blocks.map((block, index) => {
+        if (isQuadBlock(block)) {
+            return block;
+        }
+        replaced = true;
+        return fallbackBlocks[Math.min(index, fallbackBlocks.length - 1)] ?? block;
+    });
+
+    if (!replaced) {
+        return plan;
+    }
+
+    return {
+        ...plan,
+        blocks: adjusted,
+        alternatives: [],
+    };
+};
+
 const coerceHeroCopyFromResponse = (response: any): { line1: string; line2: string } | null => {
     const candidates =
         response?.response?.candidates ??
@@ -596,54 +969,14 @@ export function normaliseGeminiError(label: string, error: unknown) {
             // ignore
         }
     }
+    detectGeminiCredentialError(error);
+    if (geminiDisabled) {
+        result.disabled = geminiDisabled;
+    }
     if (typeof window !== "undefined") {
         (window as any).__lastGeminiError = result;
     }
     return result;
-}
-
-function resolveGeminiApiKey(): string | null {
-    try {
-        let metaEnv: any = undefined;
-        // Safely attempt to access import.meta.env (works in Vite, fails gracefully in Jest/Node)
-        try {
-            metaEnv = (0, eval)("typeof import !== 'undefined' && import.meta && import.meta.env ? import.meta.env : undefined");
-        } catch {}
-        const keyFromMeta = metaEnv?.VITE_GEMINI_API_KEY ?? metaEnv?.VITE_API_KEY ?? metaEnv?.GEMINI_API_KEY;
-        if (typeof keyFromMeta === "string" && keyFromMeta.trim()) {
-            return keyFromMeta.trim();
-        }
-
-        if (typeof globalThis !== "undefined") {
-            const globalKey = (globalThis as any)?.__GEMINI_KEY__ ?? (globalThis as any)?.GEMINI_API_KEY;
-            if (typeof globalKey === "string" && globalKey.trim()) {
-                return globalKey.trim();
-            }
-        }
-
-        if (typeof localStorage !== "undefined") {
-            const storedKey = localStorage.getItem("GEMINI_API_KEY") ?? localStorage.getItem("VITE_GEMINI_API_KEY");
-            if (typeof storedKey === "string" && storedKey.trim()) {
-                return storedKey.trim();
-            }
-        }
-
-        if (typeof process !== "undefined" && typeof process?.env === "object") {
-            const {
-                GEMINI_API_KEY,
-                VITE_GEMINI_API_KEY,
-                VITE_API_KEY,
-                API_KEY,
-            } = process.env as Record<string, string | undefined>;
-            const keyFromProcess = GEMINI_API_KEY ?? VITE_GEMINI_API_KEY ?? VITE_API_KEY ?? API_KEY;
-            if (typeof keyFromProcess === "string" && keyFromProcess.trim()) {
-                return keyFromProcess.trim();
-            }
-        }
-    } catch (error) {
-        console.warn("Unable to resolve Gemini API key:", error);
-    }
-    return null;
 }
 
 export const loadHistory = (): HistoricalData | null => {
@@ -675,14 +1008,37 @@ export const saveHistory = (history: HistoricalData): void => {
 
 // ...
 
-const GEMINI_ENABLED = (import.meta.env?.VITE_ENABLE_GEMINI ?? '1') !== '0';
+const GEMINI_ENABLED = (() => {
+    const runtimeOverride = typeof globalThis !== 'undefined' ? (globalThis as any).__ENABLE_GEMINI__ : undefined;
+    if (runtimeOverride != null) {
+        if (typeof runtimeOverride === 'string') return runtimeOverride !== '0';
+        if (typeof runtimeOverride === 'boolean') return runtimeOverride;
+        return Boolean(runtimeOverride);
+    }
+    const inline = import.meta.env?.VITE_ENABLE_GEMINI ?? '1';
+    return inline !== '0';
+})();
+
+const isGeminiActive = () => {
+    if (!GEMINI_ENABLED) {
+        return false;
+    }
+    geminiDisabled = validateGeminiDisableContext(geminiDisabled, currentGeminiKeyFingerprint);
+    if (!geminiDisabled) {
+        const runtime = getRuntimeDisabledContext(currentGeminiKeyFingerprint);
+        if (runtime) {
+            geminiDisabled = runtime;
+        }
+    }
+    return !geminiDisabled;
+};
 
 const GEMINI_MODELS = {
     primary: "gemini-2.5-flash-lite",
     lite: "gemini-2.5-flash-lite",
-    heavy: "gemini-2.5-flash-lite",
-    streaming: "gemini-2.5-flash-lite",
-    tts: "gemini-2.5-flash-lite",
+    heavy: "gemini-2.5-flash",
+    streaming: "gemini-2.5-flash",
+    tts: "gemini-2.5-flash-tts",
 } as const;
 
 let homeHeroCopyErrorLogged = false;
@@ -1167,13 +1523,243 @@ function buildRecoveryWorkoutPlan(context: WorkoutContextInput): WorkoutPlan {
     };
 }
 
-let geminiClient: GoogleGenAI | null | undefined;
+type GeminiGenerateContentConfig = {
+    abortSignal?: AbortSignal;
+    temperature?: number;
+    topP?: number;
+    topK?: number;
+    maxOutputTokens?: number;
+    candidateCount?: number;
+    stopSequences?: string[];
+    responseMimeType?: string;
+    responseSchema?: unknown;
+};
+
+type GeminiGenerateContentRequest = {
+    model: string;
+    contents: Array<Record<string, unknown>>;
+    config?: GeminiGenerateContentConfig;
+    tools?: unknown;
+    toolConfig?: unknown;
+    systemInstruction?: unknown;
+    safetySettings?: unknown;
+    cachedContent?: unknown;
+};
+
+type GeminiResponse = Record<string, unknown> & { text?: string };
+
+type GeminiClient = {
+    models: {
+        generateContent: (request: GeminiGenerateContentRequest) => Promise<GeminiResponse>;
+    };
+};
+
+const GEMINI_API_BASE_URL = (() => {
+    if (typeof import.meta !== 'undefined' && import.meta.env?.VITE_GEMINI_API_BASE_URL) {
+        return String(import.meta.env.VITE_GEMINI_API_BASE_URL);
+    }
+    if (typeof globalThis !== 'undefined' && (globalThis as any).__GEMINI_API_BASE_URL__) {
+        return String((globalThis as any).__GEMINI_API_BASE_URL__);
+    }
+    return 'https://generativelanguage.googleapis.com';
+})();
+
+const stripUndefined = (value: Record<string, unknown>): Record<string, unknown> => {
+    for (const key of Object.keys(value)) {
+        if (value[key] === undefined) {
+            delete value[key];
+        }
+    }
+    return value;
+};
+
+const coalesceCandidateText = (payload: any): string | undefined => {
+    const candidates = payload?.candidates;
+    if (!Array.isArray(candidates) || candidates.length === 0) {
+        return undefined;
+    }
+    const tryExtractText = (parts: any): string | undefined => {
+        if (Array.isArray(parts)) {
+            for (const part of parts) {
+                if (part && typeof part === 'object') {
+                    if (typeof part.text === 'string' && part.text.trim()) {
+                        return part.text;
+                    }
+                    const call = part.functionCall;
+                    if (call && typeof call === 'object') {
+                        const args = call.arguments ?? call.args;
+                        if (typeof args === 'string' && args.trim()) {
+                            return args;
+                        }
+                        if (args && typeof args === 'object') {
+                            try {
+                                return JSON.stringify(args);
+                            } catch {
+                                // ignore serialization errors
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        return undefined;
+    };
+
+    for (const candidate of candidates) {
+        const direct = typeof candidate?.text === 'string' ? candidate.text : undefined;
+        if (direct && direct.trim()) {
+            return direct;
+        }
+        const parts = candidate?.content?.parts ?? candidate?.parts;
+        const text = tryExtractText(parts);
+        if (text && text.trim()) {
+            return text;
+        }
+    }
+    return undefined;
+};
+
+const createGeminiClient = (apiKey: string): GeminiClient => {
+    const baseUrl = GEMINI_API_BASE_URL.replace(/\/+$/, '');
+
+    const buildGenerationConfig = (config?: GeminiGenerateContentConfig) => {
+        if (!config) {
+            return undefined;
+        }
+        const {
+            temperature,
+            topP,
+            topK,
+            maxOutputTokens,
+            stopSequences,
+            responseMimeType,
+            responseSchema,
+        } = config;
+        const generation: Record<string, unknown> = stripUndefined({
+            temperature,
+            topP,
+            topK,
+            maxOutputTokens,
+            responseMimeType,
+            responseSchema,
+        });
+        if (Array.isArray(stopSequences) && stopSequences.length) {
+            generation.stopSequences = stopSequences;
+        }
+        return Object.keys(generation).length ? generation : undefined;
+    };
+
+    const normaliseModelId = (model: string): string => {
+        const trimmed = model.trim();
+        if (trimmed.startsWith('models/')) {
+            return trimmed.slice('models/'.length);
+        }
+        return trimmed;
+    };
+
+    return {
+        models: {
+            async generateContent(request) {
+                const { model, contents, config, tools, toolConfig, systemInstruction, safetySettings, cachedContent } =
+                    request;
+
+                const { abortSignal, candidateCount, ...restConfig } = config ?? {};
+                const generationConfig = buildGenerationConfig(restConfig);
+
+                const payload: Record<string, unknown> = {
+                    contents,
+                };
+
+                if (generationConfig) {
+                    payload.generationConfig = generationConfig;
+                }
+
+                if (typeof candidateCount === 'number') {
+                    payload.candidateCount = candidateCount;
+                }
+
+                if (tools !== undefined) {
+                    payload.tools = tools;
+                }
+                if (toolConfig !== undefined) {
+                    payload.toolConfig = toolConfig;
+                }
+                if (systemInstruction !== undefined) {
+                    payload.systemInstruction = systemInstruction;
+                }
+                if (safetySettings !== undefined) {
+                    payload.safetySettings = safetySettings;
+                }
+                if (cachedContent !== undefined) {
+                    payload.cachedContent = cachedContent;
+                }
+
+                const url = new URL(
+                    `${baseUrl}/v1beta/models/${encodeURIComponent(normaliseModelId(model))}:generateContent`,
+                );
+                url.searchParams.set('key', apiKey);
+
+                const response = await fetch(url.toString(), {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify(stripUndefined(payload)),
+                    signal: abortSignal,
+                });
+
+                const contentType = response.headers.get('content-type') ?? '';
+                let data: any = null;
+                if (contentType.includes('application/json')) {
+                    try {
+                        data = await response.json();
+                    } catch (error) {
+                        data = null;
+                    }
+                } else {
+                    const textBody = await response.text();
+                    try {
+                        data = JSON.parse(textBody);
+                    } catch {
+                        data = { text: textBody };
+                    }
+                }
+
+                if (!response.ok) {
+                    const errorPayload = data ?? {};
+                    const message =
+                        errorPayload?.error?.message ??
+                        (typeof errorPayload === 'string' ? errorPayload : response.statusText || 'Gemini request failed');
+                    const error = new Error(message || 'Gemini request failed');
+                    (error as any).status = response.status;
+                    (error as any).error = errorPayload;
+                    throw error;
+                }
+
+                if (data && typeof data === 'object') {
+                    const text = coalesceCandidateText(data);
+                    if (typeof text === 'string' && text.length) {
+                        data.text = text;
+                    }
+                }
+
+                return data ?? {};
+            },
+        },
+    };
+};
+
+let geminiClient: GeminiClient | null | undefined;
 let geminiKeyCheckLogged = false;
 
-export const getGeminiClient = (): GoogleGenAI | null => {
-    if (!GEMINI_ENABLED) {
+export const getGeminiClient = (): GeminiClient | null => {
+    if (!isGeminiActive()) {
         if (!geminiKeyCheckLogged) {
-            console.info('[Gemini] Disabled via VITE_ENABLE_GEMINI flag. Using offline logic.');
+            if (!GEMINI_ENABLED) {
+                console.info('[Gemini] Disabled via VITE_ENABLE_GEMINI flag. Using offline logic.');
+            } else if (geminiDisabled) {
+                console.warn(`[Gemini] Disabled (${geminiDisabled.code}). Using offline logic.`);
+            }
             geminiKeyCheckLogged = true;
         }
         geminiClient = null;
@@ -1190,11 +1776,14 @@ export const getGeminiClient = (): GoogleGenAI | null => {
     }
     if (!apiKey) {
         geminiClient = null;
+        currentGeminiKeyFingerprint = null;
         return geminiClient;
     }
 
     try {
-        geminiClient = new GoogleGenAI({ apiKey });
+        currentGeminiKeyFingerprint = fingerprintGeminiKey(apiKey);
+        geminiDisabled = validateGeminiDisableContext(geminiDisabled, currentGeminiKeyFingerprint);
+        geminiClient = createGeminiClient(apiKey);
     } catch (error) {
         console.error('Failed to initialise Gemini client:', error);
         geminiClient = null;
@@ -1287,7 +1876,7 @@ export async function fetchPostWorkoutAnalysis(ctx: any, { signal }: { signal: A
         throw new DOMException('Aborted', 'AbortError');
     }
 
-    if (!GEMINI_ENABLED) {
+    if (!isGeminiActive()) {
         return FALLBACK_ANALYSIS;
     }
 
@@ -1370,7 +1959,7 @@ export async function fetchCoachAnswer(args: ComposeCoachPromptArgs, { signal }:
         throw new DOMException('Aborted', 'AbortError');
     }
 
-    if (!GEMINI_ENABLED) {
+    if (!isGeminiActive()) {
         return GEMINI_COACH_FALLBACK_MESSAGE;
     }
 
@@ -1556,7 +2145,7 @@ export async function fetchHomeRecommendations(
         throw new DOMException('Aborted', 'AbortError');
     }
 
-    if (!GEMINI_ENABLED) {
+    if (!isGeminiActive()) {
         return FALLBACK_HOME_RECOMMENDATIONS;
     }
 
@@ -1746,16 +2335,240 @@ export function getCoachContext(data: { lastSessionDate: Date | null; nextOptima
     return 'idle';
 }
 
-function buildFallbackHero(data: CoachData): { line1: string; line2: string } {
-    const roundedRecovery = data.recoveryScore != null ? Math.round(data.recoveryScore) : null;
+const formatExercisesList = (exercises: string[] | undefined): string | null => {
+    if (!Array.isArray(exercises)) return null;
+    const cleaned = exercises
+        .map((name) => name.trim())
+        .filter((name) => name.length > 0);
+    if (cleaned.length === 0) return null;
+    if (cleaned.length === 1) return cleaned[0]!;
+    if (cleaned.length === 2) return `${cleaned[0]} and ${cleaned[1]}`;
+    return `${cleaned.slice(0, -1).join(', ')}, and ${cleaned[cleaned.length - 1]}`;
+};
+
+const formatDurationMinutes = (minutes: number | null | undefined): string | null => {
+    if (typeof minutes !== 'number' || !Number.isFinite(minutes) || minutes <= 0) return null;
+    const rounded = Math.round(minutes);
+    return `${rounded} minute${rounded === 1 ? '' : 's'}`;
+};
+
+const formatTotalSets = (sets: number | null | undefined): string | null => {
+    if (typeof sets !== 'number' || !Number.isFinite(sets) || sets <= 0) return null;
+    const rounded = Math.round(sets);
+    return `${rounded} set${rounded === 1 ? '' : 's'}`;
+};
+
+const describeReadinessDelta = (delta: number | null | undefined): { descriptor: string | null; pushCue: string | null } => {
+    if (typeof delta !== 'number' || !Number.isFinite(delta)) {
+        return { descriptor: null, pushCue: null };
+    }
+
+    if (delta < -2) {
+        return {
+            descriptor: 'a rare climb that shows recovery is outpacing fatigue',
+            pushCue: 'lock it in with crisp technique next block',
+        };
+    }
+    if (delta <= 2) {
+        return {
+            descriptor: 'barely moved, which means you banked skill without adding fatigue',
+            pushCue: 'feel free to nudge the effort next block',
+        };
+    }
+    if (delta <= 7) {
+        return {
+            descriptor: 'a light drop that builds skill and keeps recovery easy',
+            pushCue: 'you could push a bit more next time',
+        };
+    }
+    if (delta <= 12) {
+        return {
+            descriptor: 'a solid drop that signals productive strength work',
+            pushCue: 'keep recovery on rails so the adaptation sticks',
+        };
+    }
+    return {
+        descriptor: 'a big drop—treat recovery like part of the session',
+        pushCue: 'ease off until readiness settles back above 60',
+    };
+};
+
+const describeCurrentReadiness = (
+    readiness: number | null,
+    ctaAction: CoachHomeFeedback['cta']['action'],
+): string => {
+    if (readiness == null) {
+        return "let's get sensors synced and pick up right where we left off.";
+    }
+    if (readiness >= 85) {
+        return `readiness sits at ${readiness}, so chase a crisp strength block while you're this fresh.`;
+    }
+    if (readiness >= 70) {
+        return `readiness is ${readiness}, steady enough for a focused block without overreaching.`;
+    }
+    if (readiness >= 55) {
+        return `readiness is ${readiness}, so keep it technical and cap it when speed fades.`;
+    }
+    if (ctaAction === 'start_strength') {
+        return `readiness is ${readiness}, so treat today like recovery and let the system recharge.`;
+    }
+    return `readiness is ${readiness}, so stay patient and let recovery catch up.`;
+};
+
+const formatHoursWindow = (hours: number | null | undefined): string | null => {
+    if (typeof hours !== 'number' || !Number.isFinite(hours) || hours <= 0) return null;
+    const lower = Math.max(1, Math.floor(hours));
+    const upper = Math.max(lower, Math.ceil(hours));
+    if (upper === lower) {
+        return `Within ${lower} hour${lower === 1 ? '' : 's'}`;
+    }
+    return `Within ${lower} to ${upper} hours`;
+};
+
+const lowerCaseFirst = (value: string): string => {
+    if (!value) return value;
+    return value.charAt(0).toLowerCase() + value.slice(1);
+};
+
+const capitalizeFirst = (value: string): string => {
+    if (!value) return value;
+    return value.charAt(0).toUpperCase() + value.slice(1);
+};
+
+const ensureTrailingPeriod = (value: string): string => {
+    if (!value) return value;
+    return /[.!?]\s*$/.test(value) ? value : `${value}.`;
+};
+
+const composeHomeCoachNarrative = (
+    data: CoachData,
+    ctaAction: CoachHomeFeedback['cta']['action'],
+): { line1: string; line2: string } => {
     const firstName = data.userProfile?.name?.trim().split(/\s+/)[0] ?? null;
-    const line1 = firstName
-        ? `Hey ${firstName}, your readiness is at ${roundedRecovery ?? '—'}.`
-        : `Readiness at ${roundedRecovery ?? '—'}.`;
+    const greeting = firstName ? `Hey ${firstName},` : 'Hey,';
+
+    if (!data.dataSyncOK) {
+        return {
+            line1: `${greeting} data's still syncing from yesterday.`,
+            line2: "This window is for patience—let's give it a moment so your next lift stays on track.",
+        };
+    }
+
+    const latest = data.latestSessionSummary ?? null;
+    const readinessNow =
+        typeof data.recoveryScore === 'number' && Number.isFinite(data.recoveryScore)
+            ? Math.round(data.recoveryScore)
+            : null;
+
+    const durationText = formatDurationMinutes(latest?.durationMinutes ?? null);
+    const setsText = formatTotalSets(latest?.totalSets ?? null);
+    const exercisesText = formatExercisesList(
+        Array.isArray(latest?.primaryExercises) ? latest?.primaryExercises : undefined,
+    );
+
+    let workloadSentence = '';
+    if (durationText && setsText) {
+        workloadSentence = `You trained ${durationText} for ${setsText}`;
+    } else if (durationText) {
+        workloadSentence = `You trained ${durationText}`;
+    } else if (setsText) {
+        workloadSentence = `You logged ${setsText}`;
+    }
+    if (workloadSentence && exercisesText) {
+        workloadSentence += ` on ${exercisesText}`;
+    } else if (!workloadSentence && exercisesText) {
+        workloadSentence = `You focused on ${exercisesText}`;
+    }
+
+    const readinessStart =
+        typeof latest?.readinessStart === 'number' && Number.isFinite(latest.readinessStart)
+            ? Math.round(latest.readinessStart)
+            : null;
+    const readinessEnd =
+        typeof latest?.readinessEnd === 'number' && Number.isFinite(latest.readinessEnd)
+            ? Math.round(latest.readinessEnd)
+            : null;
+    const dropValue =
+        typeof latest?.readinessDrop === 'number' && Number.isFinite(latest.readinessDrop)
+            ? Math.round(latest.readinessDrop)
+            : readinessStart != null && readinessEnd != null
+            ? readinessStart - readinessEnd
+            : null;
+
+    const readinessMovement =
+        readinessStart != null && readinessEnd != null
+            ? `and readiness moved from ${readinessStart} to ${readinessEnd}`
+            : null;
+    const deltaNarrative = describeReadinessDelta(dropValue);
+
+    const summaryParts = [
+        workloadSentence,
+        readinessMovement,
+        deltaNarrative.descriptor,
+    ].filter((part): part is string => Boolean(part && part.length));
+
+    let summarySentence = summaryParts.join(', ');
+    if (summarySentence && deltaNarrative.pushCue) {
+        summarySentence = `${summarySentence}, ${deltaNarrative.pushCue}`;
+    }
+    if (summarySentence) {
+        summarySentence = ensureTrailingPeriod(summarySentence);
+    }
+
+    const opener = latest ? `${greeting} clean work.` : `${greeting} let's map today.`;
+    let line1 = summarySentence
+        ? `${opener} ${summarySentence}`
+        : `${greeting} ${describeCurrentReadiness(readinessNow, ctaAction)}`;
+    line1 = line1.trim();
+
+    const windowText = formatHoursWindow(data.timeToNextOptimalHours);
+    const mobilitySuggestionRaw =
+        data.upcomingPlanSummary?.mobilitySuggestion ?? null;
+    const fallbackMobility =
+        ctaAction === 'start_strength'
+            ? 'do a 6 minute hip opener with 90 90 for 45 seconds per side and ankle rocks for 30 seconds per side, because it keeps squat depth smooth and reduces tightness'
+            : 'work in gentle mobility and breath work so legs stay loose before the next block';
+    const mobilitySuggestion = mobilitySuggestionRaw?.trim().length
+        ? mobilitySuggestionRaw.trim()
+        : fallbackMobility;
+    const mobilitySegment = mobilitySuggestion
+        ? ensureTrailingPeriod(
+              windowText
+                  ? `${windowText}, ${lowerCaseFirst(mobilitySuggestion)}`
+                  : capitalizeFirst(mobilitySuggestion),
+          )
+        : '';
+
+    const trend = typeof data.strengthTrendWoW === 'number' && Number.isFinite(data.strengthTrendWoW)
+        ? Math.round(data.strengthTrendWoW)
+        : null;
+    let progressSegment = '';
+    if (trend != null) {
+        if (trend > 0) {
+            progressSegment = `Progress today: quad activation was up about ${Math.abs(trend)} percent versus your recent average. Nice consistency, keep it up.`;
+        } else if (trend < 0) {
+            progressSegment = `Progress today: quad activation dipped about ${Math.abs(trend)} percent versus your recent average. Reset technique and keep the base building.`;
+        } else {
+            progressSegment = 'Progress today: quad activation held steady versus your recent average. Nice consistency, keep it up.';
+        }
+    } else {
+        progressSegment = 'Nice consistency, keep it up.';
+    }
+    progressSegment = ensureTrailingPeriod(progressSegment);
+
+    const line2Parts = [mobilitySegment, progressSegment].filter(
+        (part): part is string => Boolean(part && part.length),
+    );
+    const line2 = line2Parts.join(' ').trim();
+
     return {
         line1,
-        line2: "Let's focus on smart training today and keep building strength.",
+        line2,
     };
+};
+
+function buildFallbackHero(data: CoachData, ctaAction: CoachHomeFeedback['cta']['action']): { line1: string; line2: string } {
+    return composeHomeCoachNarrative(data, ctaAction);
 }
 
 // NEW: Generate home page hero copy via Gemini API
@@ -1768,8 +2581,8 @@ export async function fetchHomeHeroCopy(
         throw new DOMException('Aborted', 'AbortError');
     }
 
-    if (!GEMINI_ENABLED) {
-        const fallback = buildFallbackHero(data);
+    if (!isGeminiActive()) {
+        const fallback = buildFallbackHero(data, cta.action);
         return fallback;
     }
 
@@ -1803,38 +2616,49 @@ export async function fetchHomeHeroCopy(
         (timeSinceLastSessionMinutes != null && timeSinceLastSessionMinutes <= 20);
 
     const promptLines: string[] = [
-        "You are Symmetric's strength coach. Generate friendly, concise home page hero copy for the user.",
-        "Return JSON with two fields: { \"line1\": string, \"line2\": string }.",
-        "line1: 1-2 short sentences describing current state (max 140 characters).",
-        "line2: 1-2 short sentences with actionable guidance and next steps (max 180 characters).",
-        "Use natural, energetic, encouraging tone. No jargon. Use contractions. Be conversational and supportive.",
-        firstName ? `User's name: ${firstName} (personalize line1 with "Hey ${firstName},")` : "No user name available.",
-        `Current readiness: ${roundedRecovery ?? 'unknown'}`,
-        `Readiness level: ${readinessLevel}`,
-        `Trend: ${trendDescriptor}`,
-        `Coach state: ${context}`,
-        `CTA action: ${cta.action}`,
-        `Just finished session: ${justFinished}`,
-        `Data sync OK: ${dataSyncOK}`,
-        timeSinceLastSessionMinutes != null ? `Minutes since last session: ${Math.round(timeSinceLastSessionMinutes)}` : "No recent session timestamp.",
+        "You are a warm, encouraging personal trainer. Speak like a human who knows this athlete.",
         "",
-        "CONTEXT GUIDELINES:",
-        "- If justFinished=true: acknowledge they just completed a session, describe their current state (energy level, system activation)",
-        "- If justFinished=false: describe their current readiness state and how their body is doing",
-        "- If readinessLevel=high: emphasize they're in a strong position, fresh, primed",
-        "- If readinessLevel=mid: acknowledge solid baseline, good working capacity",
-        "- If readinessLevel=low: recognize fatigue, need for recovery, rebuilding phase",
-        "- If trend=rising: mention positive momentum, progress building",
-        "- If trend=cooling: acknowledge recent work load, natural recovery phase",
+        "Return JSON: { \"line1\": string, \"line2\": string }",
         "",
-        "ACTION GUIDANCE:",
-        "- If cta.action=start_strength: suggest a strength training opportunity, mention quality reps and when to stop (around readiness 50)",
-        "- If cta.action=start_recovery: emphasize active recovery, mobility, adaptation phase",
-        "- If cta.action=plan_session: encourage planning ahead, mapping next workout",
-        "- If cta.action=connect: prompt to get sensors connected to start training",
-        "- If dataSyncOK=false: explain data is syncing, be patient",
+        "Format:",
+        "- line1: A flowing paragraph (2-4 sentences, max 420 characters)",
+        "- line2: Empty string (not used)",
         "",
-        "IMPORTANT: Generate fresh, varied copy each time. Don't repeat exact phrases. Be creative while staying encouraging and actionable.",
+        "Tone:",
+        "- Friendly, natural, no slang or emojis",
+        "- Casual but professional",
+        "- No em dashes, bullet lists, or technical jargon",
+        "",
+        "Structure for line1:",
+        `1. Greeting: ${firstName ? `"Hey ${firstName}, "` : '"'} + brief acknowledgment`,
+        `2. State: "Your readiness is at ${roundedRecovery ?? '—'}" + what it means`,
+        "3. Action: What to do and why it makes sense",
+        "4. (Optional) Brief encouragement or next step",
+        "",
+        "Example outputs:",
+        "",
+        `Readiness 80+ (fresh):`,
+        `"Hey ${firstName ?? 'there'}, your readiness is at 85, which means you're fresh and recovered. This is a great time to add a focused strength block before you drift toward 50, so you can maximize gains while you have this high energy. Keep it technical and stop when power starts to fade."`,
+        "",
+        `Readiness 65-79 (solid):`,
+        `"Hey ${firstName ?? 'there'}, your readiness is at 68, which is solid for training without overdoing it. You can add a clean strength block now and wrap up as you approach 50 to balance stimulus and recovery. Stay sharp and rack when form softens."`,
+        "",
+        `Readiness 50-64 (workable):`,
+        `"Hey ${firstName ?? 'there'}, your readiness is at 56, which is workable but you should train carefully. Light work in the 3-6 rep range will help maintain strength without adding extra recovery time. Focus on form and stop if anything feels off."`,
+        "",
+        `Readiness <50 (need rest):`,
+        `"Hey ${firstName ?? 'there'}, your readiness is at 42, which means your body needs rest right now. Sleep and nutrition will set you up for a strong session tomorrow, so prioritize recovery over pushing through. Give it 12-24 hours before your next block."`,
+        "",
+        `Context: readiness=${roundedRecovery ?? '?'}, level=${readinessLevel}, action=${cta.action}, justFinished=${justFinished}`,
+        "",
+        "Rules:",
+        "- Write ONE flowing paragraph in line1",
+        "- Set line2 to empty string",
+        "- Use natural language: 'which means', 'so you can', 'to help'",
+        "- Connect current state → action → reasoning → outcome",
+        `- Recommended action: ${cta.action === 'start_strength' ? 'add a strength block' : cta.action === 'start_recovery' ? 'do light movement for 20-30min' : 'rest and plan tomorrow'}`,
+        "- If justFinished=true, acknowledge the recent session briefly",
+        "- Max 420 characters total",
     ];
 
     const prompt = promptLines.join('\n');
@@ -1851,12 +2675,7 @@ export async function fetchHomeHeroCopy(
     try {
         const client = getGeminiClient();
         if (!client) {
-            // Fallback to simple default
-            const fallback = firstName ? `Hey ${firstName}, your readiness is at ${roundedRecovery ?? '—'}.` : `Readiness at ${roundedRecovery ?? '—'}.`;
-            return {
-                line1: fallback,
-                line2: "Let's focus on smart training today and keep building strength.",
-            };
+            return buildFallbackHero(data, cta.action);
         }
 
         if (signal.aborted) {
@@ -1871,7 +2690,7 @@ export async function fetchHomeHeroCopy(
                 temperature: 0.7,
                 responseMimeType: "application/json",
                 responseSchema: schema,
-                maxOutputTokens: 200,
+                maxOutputTokens: 300,
             },
         });
 
@@ -1882,7 +2701,7 @@ export async function fetchHomeHeroCopy(
         const rawText = response.text ?? await extractText(response);
         const parsed = tryParseJsonObject(rawText);
         const hero = (() => {
-            if (parsed?.line1 && parsed?.line2) {
+            if (parsed?.line1 !== undefined && parsed?.line2 !== undefined) {
                 return {
                     line1: String(parsed.line1).trim(),
                     line2: String(parsed.line2).trim(),
@@ -1911,19 +2730,14 @@ export async function fetchHomeHeroCopy(
         }
         if (!homeHeroCopyErrorLogged) {
             const normalised = normaliseGeminiError("homeHeroCopy", e);
-            const message =
-                typeof normalised?.message === 'string'
-                    ? normalised.message
-                    : JSON.stringify(normalised);
-            console.warn("[Symmetric][HomeHeroCopy] Falling back:", message);
+            const message = typeof normalised?.message === 'string'
+                ? normalised.message
+                : JSON.stringify(normalised);
+            console.debug("[Symmetric][HomeHeroCopy] Gemini unavailable, using fallback:", message);
             homeHeroCopyErrorLogged = true;
         }
         // Fallback
-        const fallback = firstName ? `Hey ${firstName}, your readiness is at ${roundedRecovery ?? '—'}.` : `Readiness at ${roundedRecovery ?? '—'}.`;
-        return {
-            line1: fallback,
-            line2: "Let's focus on smart training today and keep building strength.",
-        };
+        return buildFallbackHero(data, cta.action);
     }
 }
 
@@ -1950,13 +2764,55 @@ export async function fetchDailyWorkoutPlan(
     }
 
     const offlinePlan = buildOfflineWorkoutPlan(context);
-    if ((context.readiness ?? 0) < 51) {
-        return buildRecoveryWorkoutPlan(context);
-    }
 
-    if (!GEMINI_ENABLED) {
+    if (!isGeminiActive()) {
         return offlinePlan;
     }
+
+    const proxyVarietyToken = Math.floor(Math.random() * 1000);
+    const proxyPayload = { context, varietyToken: proxyVarietyToken };
+
+    let proxyEnabled = resolveBooleanFlag('__ENABLE_DAILY_PROXY__', 'VITE_ENABLE_DAILY_PROXY', 'VITE_ENABLE_COACH_API', false);
+    if (proxyEnabled && typeof window !== 'undefined') {
+        const { hostname, port } = window.location;
+        if (hostname === 'localhost' && (port === '' || port === '3000')) {
+            proxyEnabled = false;
+        }
+    }
+
+    if (proxyEnabled) {
+        try {
+            const response = await fetch('/api/gemini/daily-workout', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                signal,
+                body: JSON.stringify(proxyPayload),
+            });
+
+            if (signal.aborted) {
+                throw new DOMException('Aborted', 'AbortError');
+            }
+
+            if (response.ok) {
+                const plan = (await response.json()) as WorkoutPlan;
+                if (plan && Array.isArray(plan.blocks) && plan.blocks.length > 0) {
+                    return enforceQuadFocus(plan, offlinePlan);
+                }
+            }
+
+            if (response.status !== 404) {
+                throw new Error(`Proxy returned ${response.status}`);
+            }
+        } catch (error) {
+            if (isAbortError(error)) {
+                throw new DOMException('Aborted', 'AbortError');
+            }
+            console.warn('[Symmetric][DailyWorkoutPlan] Proxy unavailable, falling back to direct Gemini:', normaliseGeminiError('dailyWorkoutPlan', error));
+        }
+    }
+
+    // Skip API proxy - use direct Gemini client call
+    // (Serverless function not deployed in this environment)
 
     const client = getGeminiClient();
     if (!client) {
@@ -1967,11 +2823,17 @@ export async function fetchDailyWorkoutPlan(
     const varietyToken = Math.floor(Math.random() * 1000);
 
     const promptLines: string[] = [
-        "You are Symmetric’s Quad Strength Planner—expert in sEMG (RMS, rate-of-rise, %MVC), fatigue, and set-to-set decisioning.",
+        "You are Symmetric's Quad Strength Planner—expert in sEMG (RMS, rate-of-rise, %MVC), fatigue, and progressive overload for quadriceps development.",
         "Return ONLY JSON per the schema at the end. No markdown or extra text.",
         '',
+        'PRIMARY DIRECTIVE (READ THIS FIRST)',
+        'Every workout MUST bring readiness down to 50-55 by the end. This is your #1 goal.',
+        'You will add as many exercises as needed (3, 4, or even 5 blocks) to achieve this target.',
+        'DO NOT stop at 2 exercises unless readiness has already reached 50-55.',
+        '',
         'Objective',
-        'Generate today’s safest, most effective plan. Strength is forbidden below 49. Preserve or improve readiness when low.',
+        'Generate today\'s most effective QUAD-FOCUSED strength plan. Prioritize compound leg exercises that build quadriceps strength and size.',
+        'Strength training is forbidden below readiness 49. If readiness < 49, use light technique work or recommend rest.',
         '',
         'Inputs',
         `readiness: ${context.readiness}`,
@@ -1987,8 +2849,27 @@ export async function fetchDailyWorkoutPlan(
         `weightKg: ${context.weightKg ?? 'null'}`,
         `est1RMKg: ${context.est1RMKg ?? 'null'}`,
         '',
+        'Exercise Selection Rules (CRITICAL)',
+        'STRENGTH MODE (readiness ≥ 49):',
+        '  - Primary exercises ONLY: Barbell Back Squat, Front Squat, Bulgarian Split Squat, Leg Press, Hack Squat',
+        '  - Accessory exercises ONLY: Leg Extension, Goblet Squat, Step-ups, Walking Lunges, Box Squats, Sissy Squat',
+        '  - NEVER use: planks, cardio, aerobic work, isometric holds, core work (these do NOT build quad strength)',
+        '  - Structure: 1 main compound lift + as many accessories as needed to hit readiness target',
+        '  - Total blocks: typically 3-5 exercises (2 blocks is rarely enough volume)',
+        '  - IMPORTANT: Keep adding exercises until readinessAfter reaches 50-55 range',
+        '',
+        'READINESS_TRAINING MODE (readiness < 49):',
+        '  - Light technique ONLY: Bodyweight squats (15-20 reps), wall sits (30s), tempo squats (slow eccentric)',
+        '  - Purpose: practice movement patterns WITHOUT fatigue or strength gains',
+        '  - Total cost must be ≤ 1.0',
+        '',
+        'OFF_DAY MODE:',
+        '  - Use when: readiness < 30, pain/illness labels present, or excessive fatigue',
+        '  - Return empty blocks array with rationale explaining why rest is needed',
+        '',
         'Mode rule (hard)',
-        'If readiness < 49 → mode ≠ "strength". Use "readiness_training" (micro-cost) or "off_day".',
+        'If readiness < 49 → mode must be "readiness_training" or "off_day" (NO strength work).',
+        'If readiness ≥ 49 → mode should be "strength" (unless pain/illness present).',
         '',
         'Cost model (for projection)',
         'Per-set base: heavy 2.5, moderate 1.6, light 1.0, isometric 0.6, technique 0.3, aerobic_low 0.8.',
@@ -1997,27 +2878,113 @@ export async function fetchDailyWorkoutPlan(
         'TotalCost = Σ(base × repsMult × rmsDropMult);',
         'projected.readinessAfter = max(0, readinessBefore − round1(TotalCost)).',
         '',
-        'Caps:',
-        'If mode === "strength" and readiness is 49–64 → TotalCost ≤ (readiness − 49) + 3.',
+        'Volume Target (CRITICAL - MUST ACHIEVE)',
+        'PRIMARY GOAL: Every workout MUST drive readiness down to 50-55 by the end. This is NON-NEGOTIABLE.',
+        'Target readinessAfter: MUST be 50-55 (never below 49, never above 56).',
+        'Calculate exact TotalCost needed: TotalCost = readinessBefore - 52 (targeting mid-range of 50-55).',
+        'Examples:',
+        '  - Starting readiness 80 → TotalCost must be ~28 (result: 52)',
+        '  - Starting readiness 75 → TotalCost must be ~23 (result: 52)',
+        '  - Starting readiness 70 → TotalCost must be ~18 (result: 52)',
+        '  - Starting readiness 65 → TotalCost must be ~13 (result: 52)',
+        '  - Starting readiness 60 → TotalCost must be ~8 (result: 52)',
+        'You MUST add enough exercises (2, 3, 4, or even 5 blocks) to reach this target.',
+        '',
+        'Caps (safety limits):',
+        'If mode === "strength" and readiness is 49–64 → TotalCost = readiness - 52 (minimum to hit target).',
+        'If mode === "strength" and readiness is 65–79 → TotalCost must be (readiness - 52), capped at 30 max.',
+        'If mode === "strength" and readiness ≥ 80 → TotalCost must be (readiness - 52), capped at 40 max.',
         'If mode !== "strength" → TotalCost ≤ 1 (aim 0–0.5).',
+        'The cap is a safety limit, but you should ALWAYS try to hit readinessAfter of 50-55.',
         '',
         'Strength rules (only if mode = "strength")',
-        '3–6 reps; hit productive RMS-drop band inferred from history; symmetryMin ≥ 90; down-regulate if signals poor. Respect exerciseId/weightKg unless it would break the floor.',
+        'You MUST add enough blocks to drive readiness to 50-55. Calculate running cost after each block.',
+        '',
+        'Block 1 (REQUIRED - Main): ONE primary compound (Barbell Squat, Front Squat, Bulgarian Split Squat, Leg Press, or Hack Squat).',
+        '  - Heavy load: 4-5 sets × 3-6 reps (cost ~10-14) OR moderate load: 4 sets × 6-8 reps (cost ~8-12)',
+        '  - Rest: 120-180s',
+        '',
+        'Block 2 (REQUIRED - Accessory 1): ONE secondary compound or isolation.',
+        '  - Moderate/light: 3-4 sets × 8-12 reps (cost ~6-9)',
+        '  - Examples: Leg Extension, Bulgarian Split Squat, Goblet Squat, Step-ups',
+        '  - Rest: 60-90s',
+        '',
+        'Block 3 (REQUIRED IF readinessAfter still >55 after Block 2): ONE quad isolation or unilateral.',
+        '  - Light/moderate: 3-4 sets × 10-15 reps (cost ~5-8)',
+        '  - Examples: Leg Extension, Walking Lunges, Sissy Squat, Single-leg Step-ups',
+        '  - Rest: 60s',
+        '',
+        'Block 4 (REQUIRED IF readinessAfter still >55 after Block 3): Additional quad work.',
+        '  - Light/moderate: 3 sets × 12-20 reps (cost ~4-7)',
+        '  - Examples: Leg Extension (burnout), Goblet Squat (high rep), Walking Lunges',
+        '  - Rest: 45-60s',
+        '',
+        'Block 5 (Add if needed): If after 4 blocks readinessAfter is still >55, add a fifth block.',
+        '  - Light: 2-3 sets × 15-20 reps (cost ~3-5)',
+        '  - Examples: Leg Extension, Sissy Squat, High-rep Step-ups',
+        '  - Rest: 45-60s',
+        '',
+        'CALCULATION PROCESS (follow exactly):',
+        '1. Start with readinessBefore (from input)',
+        '2. Design Block 1 → estimate its cost → subtract from readiness',
+        '   Record: Block 1 readiness_before = input readiness, readiness_after = input - cost',
+        '3. Design Block 2 → estimate its cost → subtract from running readiness',
+        '   Record: Block 2 readiness_before = Block 1 readiness_after, readiness_after = Block 1 readiness_after - cost',
+        '4. Check: is current readiness in 50-55? If YES, stop. If NO (>55), add Block 3.',
+        '5. Design Block 3 → estimate its cost → subtract from running readiness',
+        '   Record: Block 3 readiness_before = Block 2 readiness_after, readiness_after = Block 2 readiness_after - cost',
+        '6. Check: is current readiness in 50-55? If YES, stop. If NO (>55), add Block 4.',
+        '7. Continue until readinessAfter lands in 50-55 range.',
+        '8. IMPORTANT: Track readiness_before, readiness_after, and block_cost for EVERY block.',
+        '',
+        'SymmetryMin ≥ 90 for all strength work.',
+        'Respect exerciseId/weightKg if provided (user\'s preference from last session).',
+        'Notes MUST explain: (1) why this exercise builds quads, (2) key form cues.',
         '',
         'Readiness training rules',
-        'Technique + isometrics + easy aerobic; designed to hold or slightly raise readiness. Keep cost ≤ 1.',
+        'Light bodyweight movements ONLY. Bodyweight squats (15-20 reps), wall sits (30-45s max), tempo squats.',
+        'Goal: maintain movement quality and neural patterns, NOT build strength. Keep cost ≤ 1.',
         '',
-        'Contract (must pass)',
+        'Contract (must pass - STRICT VALIDATION)',
         'If readiness < 49 → mode !== "strength".',
-        'If mode === "strength" → recompute cost; must yield projected.readinessAfter ≥ 49.',
-        'If mode !== "strength" → projected.readinessAfter ≥ readinessBefore − 1 (prefer ≥ before).',
+        'If mode === "strength" → projected.readinessAfter MUST be between 50 and 55 (NOT 49, NOT 56+).',
+        'If mode !== "strength" → projected.readinessAfter ≥ readinessBefore − 1.',
         'Strength blocks: targets.symmetryMin ≥ 90.',
-        'If pain/illness labels → no strength.',
+        'If pain/illness labels → mode = "off_day".',
+        'STRENGTH mode: blocks array must contain ONLY quad-building exercises (NO planks, cardio, core work).',
+        'STRENGTH mode: minimum 2 blocks, but keep adding until readinessAfter is 50-55.',
+        'EVERY block MUST have: readiness_before (number), readiness_after (number), block_cost (number).',
+        'Block readiness chain: Block[N].readiness_before === Block[N-1].readiness_after (for N > 0).',
+        'Final block readiness_after === projected.readinessAfter.',
+        'FAIL CONDITION: If mode="strength" and projected.readinessAfter > 55 → YOU MUST ADD MORE EXERCISES.',
+        'FAIL CONDITION: If mode="strength" and projected.readinessAfter < 50 → YOU MUST REDUCE VOLUME.',
+        'FAIL CONDITION: If any block is missing readiness_before, readiness_after, or block_cost → INVALID.',
         '',
-        'Self-audit (before emitting JSON)',
-        'Echo readiness into projected.readinessBefore.',
-        'Compute TotalCost and projected.readinessAfter.',
-        'If a draft breaks any contract, switch to "readiness_training" and recompute.',
+        'Self-audit (MANDATORY - do this BEFORE generating JSON)',
+        'Step 1: Verify ALL exercises are quad-focused compound or isolation movements.',
+        'Step 2: Verify you avoided planks, cardio, isometric holds, and core exercises.',
+        'Step 3: Count your blocks. Do you have at least 2?',
+        'Step 4: Calculate TotalCost step by step:',
+        '  - Block 1 cost = ? (use the formulas)',
+        '  - Block 2 cost = ?',
+        '  - Block 3 cost = ? (if present)',
+        '  - Block 4 cost = ? (if present)',
+        '  - TotalCost = sum of all block costs',
+        'Step 5: Calculate projected.readinessAfter = readinessBefore - TotalCost',
+        'Step 6: CHECK: Is projected.readinessAfter between 50 and 55?',
+        '  - If > 55: ADD ANOTHER BLOCK (go back to Step 4)',
+        '  - If < 50: REDUCE sets/reps in one block (go back to Step 4)',
+        '  - If 50-55: GOOD, proceed to Step 7',
+        'Step 7: Calculate PER-BLOCK readiness values (CRITICAL FOR TIMELINE):',
+        '  - Block 1: readiness_before = readinessBefore (from input), readiness_after = readinessBefore - Block1Cost, block_cost = Block1Cost',
+        '  - Block 2: readiness_before = Block1.readiness_after, readiness_after = Block1.readiness_after - Block2Cost, block_cost = Block2Cost',
+        '  - Block 3: readiness_before = Block2.readiness_after, readiness_after = Block2.readiness_after - Block3Cost, block_cost = Block3Cost',
+        '  - Continue for all blocks...',
+        '  - Final block readiness_after MUST match projected.readinessAfter',
+        'Step 8: Echo readiness into projected.readinessBefore.',
+        'Step 9: Double-check contract conditions one more time.',
+        'Step 10: Verify EVERY block has readiness_before, readiness_after, and block_cost fields populated.',
+        'CRITICAL: Do NOT emit JSON until projected.readinessAfter is in 50-55 range AND all blocks have readiness fields.',
         '',
         'Output JSON exactly matching the schema.',
         '',
@@ -2034,7 +3001,10 @@ export async function fetchDailyWorkoutPlan(
         '"restSec": number,',
         '"tempo": string | null,',
         '"notes": string | null,',
-        '"targets": { "rmsDropBand": [number, number] | null, "rorCue": string | null, "symmetryMin": number | null }',
+        '"targets": { "rmsDropBand": [number, number] | null, "rorCue": string | null, "symmetryMin": number | null },',
+        '"readiness_before": number,  // REQUIRED - readiness at start of this block',
+        '"readiness_after": number,   // REQUIRED - readiness at end of this block',
+        '"block_cost": number          // REQUIRED - cost of this block (readiness_before - readiness_after)',
         '}',
         '],',
         '"projected": { "readinessBefore": number, "readinessAfter": number, "delta": number },',
@@ -2056,17 +3026,45 @@ export async function fetchDailyWorkoutPlan(
 
     const prompt = promptLines.join('\n');
 
+    // Retry function with exponential backoff for 503 errors
+    const retryWithBackoff = async (maxRetries = 3, baseDelay = 2000) => {
+        let lastError: any;
+        for (let attempt = 0; attempt < maxRetries; attempt++) {
+            try {
+                return await client.models.generateContent({
+                    model: 'gemini-2.5-flash-lite',
+                    contents: [{ role: 'user', parts: [{ text: prompt }] }],
+                    config: {
+                        abortSignal: signal,
+                        temperature: 0.2,
+                        responseMimeType: 'application/json',
+                        maxOutputTokens: 1500,  // Increased for complete workout plans
+                    },
+                });
+            } catch (error: any) {
+                lastError = error;
+                const errorMsg = error?.message || String(error);
+                const is503 = errorMsg.includes('503') || errorMsg.includes('overloaded') || errorMsg.includes('UNAVAILABLE');
+                const is429 = errorMsg.includes('429') || errorMsg.includes('quota');
+
+                if (is503 || is429) {
+                    if (attempt < maxRetries - 1) {
+                        const delay = baseDelay * Math.pow(2, attempt);
+                        console.warn(`[DailyWorkoutPlan] Gemini overloaded (attempt ${attempt + 1}/${maxRetries}), retrying in ${delay}ms...`);
+                        await new Promise(resolve => setTimeout(resolve, delay));
+                    }
+                } else {
+                    throw error;
+                }
+            }
+        }
+        throw lastError;
+    };
+
     try {
-        const response = await client.models.generateContent({
-            model: GEMINI_MODELS.primary,
-            contents: [{ role: 'user', parts: [{ text: prompt }] }],
-            config: {
-                abortSignal: signal,
-                temperature: 0.2,
-                responseMimeType: 'application/json',
-                maxOutputTokens: 1000,
-            },
-        });
+        console.log('[DailyWorkoutPlan] Starting Gemini API call...');
+        const response = await retryWithBackoff(3, 2000);
+        console.log('[DailyWorkoutPlan] Gemini API call successful');
 
         if (signal.aborted) {
             throw new DOMException('Aborted', 'AbortError');
@@ -2075,9 +3073,10 @@ export async function fetchDailyWorkoutPlan(
         const raw = response.text ?? (await extractText(response));
         console.log('[DailyWorkoutPlan] Raw response length:', raw?.length);
         console.log('[DailyWorkoutPlan] Raw response (first 500 chars):', raw?.substring(0, 500));
-        console.log('[DailyWorkoutPlan] Raw response (last 200 chars):', raw?.substring(Math.max(0, (raw?.length ?? 0) - 200)));
+
         const parsed = tryParseJsonObject(raw);
-        console.log('[DailyWorkoutPlan] Parsed response:', parsed);
+        console.log('[DailyWorkoutPlan] Parsed response keys:', parsed ? Object.keys(parsed) : 'null');
+
         if (!parsed || typeof parsed !== 'object') {
             console.error('[DailyWorkoutPlan] Failed to parse. Raw:', raw);
             throw new Error('Invalid workout plan structure');
@@ -2111,6 +3110,30 @@ export async function fetchDailyWorkoutPlan(
         const transformedBlocks = blocksRaw.map((block, idx) => {
             const b = block as Record<string, unknown>;
             const targets = (b.targets as Record<string, unknown>) || {};
+            const readinessBefore =
+                typeof (b as any).readiness_before === 'number'
+                    ? (b as any).readiness_before
+                    : typeof (b as any).readinessBefore === 'number'
+                    ? (b as any).readinessBefore
+                    : undefined;
+            const readinessAfter =
+                typeof (b as any).readiness_after === 'number'
+                    ? (b as any).readiness_after
+                    : typeof (b as any).readinessAfter === 'number'
+                    ? (b as any).readinessAfter
+                    : undefined;
+            const blockCostRaw =
+                typeof (b as any).block_cost === 'number'
+                    ? (b as any).block_cost
+                    : typeof (b as any).blockCost === 'number'
+                    ? (b as any).blockCost
+                    : readinessBefore != null && readinessAfter != null
+                    ? readinessBefore - readinessAfter
+                    : undefined;
+            const blockCost =
+                blockCostRaw != null && Number.isFinite(blockCostRaw)
+                    ? Number(blockCostRaw)
+                    : undefined;
             return {
                 label: b.displayName as string,
                 type: idx === 0 ? 'main' : 'accessory',
@@ -2138,11 +3161,22 @@ export async function fetchDailyWorkoutPlan(
                 },
                 assumptions: [],
                 expect_label: true,
+                readiness_before: readinessBefore,
+                readiness_after: readinessAfter,
+                block_cost: blockCost,
             };
         });
 
         const projected = (candidate.projected as Record<string, unknown>) || {};
         const readiness = typeof projected.readinessBefore === 'number' ? projected.readinessBefore : context.readiness ?? 65;
+        const projectedAfter =
+            typeof projected.readinessAfter === 'number' ? projected.readinessAfter : undefined;
+        const projectedDelta =
+            typeof projected.delta === 'number'
+                ? projected.delta
+                : projectedAfter != null
+                ? projectedAfter - readiness
+                : undefined;
 
         // Build the complete WorkoutPlan
         const workoutPlan: WorkoutPlan = {
@@ -2161,15 +3195,33 @@ export async function fetchDailyWorkoutPlan(
             telemetry_focus: Array.isArray(candidate.telemetry_focus)
                 ? candidate.telemetry_focus as any
                 : ['%MVC_peak', 'RoR_0_150', 'symmetry_pct', 'readiness'],
+            projected:
+                projectedAfter != null && projectedDelta != null
+                    ? {
+                          readinessBefore: readiness,
+                          readinessAfter: projectedAfter,
+                          delta: projectedDelta,
+                      }
+                    : projectedAfter != null
+                    ? {
+                          readinessBefore: readiness,
+                          readinessAfter: projectedAfter,
+                          delta: projectedAfter - readiness,
+                      }
+                    : undefined,
+            mode:
+                typeof candidate.mode === 'string'
+                    ? (candidate.mode as WorkoutPlan['mode'])
+                    : undefined,
         };
 
-        return workoutPlan;
+        return enforceQuadFocus(workoutPlan, offlinePlan);
     } catch (error) {
         if (isAbortError(error)) {
             throw new DOMException('Aborted', 'AbortError');
         }
         console.warn('[Symmetric][DailyWorkoutPlan] Falling back:', normaliseGeminiError('dailyWorkoutPlan', error));
-        return offlinePlan;
+        return enforceQuadFocus(offlinePlan, offlinePlan);
     }
 }
 
@@ -2218,156 +3270,7 @@ export function getSymmetricHomePageData(data: CoachData, isConnected: boolean):
         trendHasData: hasTrendData,
     };
 
-    const firstName = data.userProfile?.name?.trim().split(/\s+/)[0] ?? null;
-    const personalize = (message: string) => {
-        if (firstName) {
-            return `Hey ${firstName}, ${message}`;
-        }
-        if (!message) return message;
-        return message.charAt(0).toUpperCase() + message.slice(1);
-    };
-
-    const buildStory = (): { line1: string; line2: string } => {
-        if (!dataSyncOK) {
-            return {
-                line1: personalize("data's still syncing from yesterday."),
-                line2: "This window is for patience—let's give it a moment so your next lift stays on track.",
-            };
-        }
-
-        const readinessLevel = (() => {
-            if (roundedRecovery == null) return 'unknown';
-            if (roundedRecovery >= 85) return 'high';
-            if (roundedRecovery >= 50) return 'mid';
-            return 'low';
-        })();
-
-        const trendDescriptor = (() => {
-            if (strengthTrendWoW == null) return 'steady';
-            if (strengthTrendWoW >= 2) return 'rising';
-            if (strengthTrendWoW <= -2) return 'cooling';
-            return 'steady';
-        })();
-
-        const pushingStrength = cta.action === 'start_strength';
-        const baseWhereNow = (() => {
-            const justFinished =
-                context === 'postWorkout' ||
-                (timeSinceLastSessionMinutes != null && timeSinceLastSessionMinutes <= 20);
-
-            if (justFinished) {
-                switch (readinessLevel) {
-                    case 'high':
-                        return "Strong finish just now—your system's still elevated from that session.";
-                    case 'mid':
-                        return pushingStrength
-                            ? "Session just wrapped with plenty in the tank—let's ride it until readiness dips toward 50."
-                            : "Session just wrapped and your body is easing back toward baseline.";
-                    case 'low':
-                        return "You just put in work—let's help your legs recover while the fatigue is fresh.";
-                    default:
-                        return "Great effort—let's capture the recovery window immediately.";
-                }
-            }
-
-            switch (readinessLevel) {
-                case 'high':
-                    return trendDescriptor === 'rising'
-                        ? "your body bounced back and the trend is rising."
-                        : "your body is fresh and ready to be pushed.";
-                case 'mid':
-                    if (pushingStrength) {
-                        return trendDescriptor === 'rising'
-                            ? "your base is climbing—great moment for solid strength work."
-                            : "your base is steady—hit a focused strength block without forcing it.";
-                    }
-                    return trendDescriptor === 'rising'
-                        ? "your body is steady and nudging upward from recent work."
-                        : "your body is steady and holding strong right now.";
-                case 'low':
-                    return trendDescriptor === 'rising'
-                        ? "recent work is still in your legs even as the trend climbs."
-                        : "your body is still shaking off the last session.";
-                default:
-                    return "we're lining up for today.";
-            }
-        })();
-
-        const opportunity = (() => {
-            const justFinished =
-                context === 'postWorkout' ||
-                (timeSinceLastSessionMinutes != null && timeSinceLastSessionMinutes <= 20);
-
-            if (justFinished) {
-                if (pushingStrength && readinessLevel !== 'low') {
-                    return readinessLevel === 'high'
-                        ? "You've still got headroom—ride the momentum for one more strength window before readiness slides toward 50."
-                        : "You've got more to give—let's grab one tidy block now, then ease off as you drift toward 50.";
-                }
-                return "This recovery window is where your strength gains lock in—treat it like part of the session.";
-            }
-
-            switch (cta.action) {
-                case 'start_strength':
-                    if (readinessLevel === 'high') {
-                        return "This is the perfect window to chase fresh strength.";
-                    }
-                    if (readinessLevel === 'mid') {
-                        return "This window is steady enough to squeeze in one more strength block before you drift toward 50.";
-                    }
-                    return "This is a sharp window to keep your strength drive going.";
-                case 'start_recovery':
-                    return "This is the right moment to lock in quality recovery."
-                case 'plan_session':
-                    return "This pause is perfect to map the next lift so you keep building."
-                case 'connect':
-                    return "Getting your sensors online opens the door to stronger sessions."
-                default:
-                    return "This window keeps your long-term strength moving forward.";
-            }
-        })();
-
-        const action = (() => {
-            const justFinished =
-                context === 'postWorkout' ||
-                (timeSinceLastSessionMinutes != null && timeSinceLastSessionMinutes <= 20);
-
-            if (justFinished) {
-                if (pushingStrength && readinessLevel !== 'low') {
-                    return readinessLevel === 'high'
-                        ? "Let's jump straight into a clean strength block and rack the moment power fades toward 50."
-                        : "Slide back under the bar for one focused block, then call it when things start to slow near 50.";
-                }
-                return "Let's lock in mobility, fuel, and breath work while adaptations are still hot.";
-            }
-
-            switch (cta.action) {
-                case 'start_strength':
-                    if (readinessLevel === 'high') {
-                        return "Let's start a strength session now so the next set hits harder.";
-                    }
-                    if (readinessLevel === 'mid') {
-                        return "Let's add a focused strength block now and keep each rep crisp until you settle near 50.";
-                    }
-                    return "Let's nudge in with focused technique work so momentum holds.";
-                case 'start_recovery':
-                    return "Let's start a quick recovery session so tomorrow feels stronger.";
-                case 'plan_session':
-                    return "Let's plan the next lift so your progress keeps stacking.";
-                case 'connect':
-                    return "Let's connect your sensors and get moving toward stronger work.";
-                default:
-                    return "Let's stay in motion so your strength story keeps growing.";
-            }
-        })();
-
-        return {
-            line1: personalize(baseWhereNow),
-            line2: `${opportunity} ${action}`,
-        };
-    };
-
-    const story = buildStory();
+    const story = composeHomeCoachNarrative(data, cta.action);
 
     const quickReplyMap: Record<CoachContextState, string[]> = {
         postWorkout: ["Recover faster?", "Ready for heavy when?", "Was fatigue timed right?"],
@@ -2942,7 +3845,7 @@ export async function fetchSessionContinuationAdvice(
         throw new DOMException('Aborted', 'AbortError');
     }
 
-    if (!GEMINI_ENABLED) {
+    if (!isGeminiActive()) {
         return `Completed ${sessionData.totalReps} reps. Your readiness dropped by ${sessionData.readinessDrop} points.`;
     }
 

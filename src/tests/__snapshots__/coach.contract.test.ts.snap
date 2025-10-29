@@ -1,0 +1,133 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`Fixture Snapshots > should match snapshot for early fatigue scenario 1`] = `
+{
+  "add_reps": null,
+  "advice_id": "adv-001-early-fatigue",
+  "advice_type": "effort_change",
+  "ask_reason_on_skip_or_override": true,
+  "confidence": 0.88,
+  "effort_delta": -1,
+  "internal_rationale": "Fatigue rep 4 is well below target window 7-10; reduce load.",
+  "offer_swap": false,
+  "primary_text": "Fatigue crashed the party at rep 4—tomorrow's legs would riot.",
+  "projection": {
+    "ci": 0.82,
+    "delta_hit_rate_pct": 12,
+  },
+  "rest_seconds": 100,
+  "safety": {
+    "end_exercise": false,
+    "suppress_load_calls": false,
+  },
+  "secondary_text": "Ease the load about 5% and rest 100s so recovery stays on your side.",
+  "swap_candidate": null,
+  "telemetry_tags": [
+    "early_fatigue",
+    "effort_down",
+  ],
+}
+`;
+
+exports[`Fixture Snapshots > should match snapshot for in-window scenario 1`] = `
+{
+  "add_reps": null,
+  "advice_id": "adv-003-in-window",
+  "advice_type": "rest",
+  "ask_reason_on_skip_or_override": false,
+  "confidence": 0.94,
+  "effort_delta": 0,
+  "offer_swap": false,
+  "primary_text": "Fatigue landed right at rep 8—money time.",
+  "projection": null,
+  "rest_seconds": 90,
+  "safety": {
+    "end_exercise": false,
+    "suppress_load_calls": false,
+  },
+  "secondary_text": "Hold this plan and rest 90s to keep stacking reliable strength.",
+  "swap_candidate": null,
+  "telemetry_tags": [
+    "in_window",
+    "maintain",
+  ],
+}
+`;
+
+exports[`Fixture Snapshots > should match snapshot for low signal scenario 1`] = `
+{
+  "add_reps": null,
+  "advice_id": "adv-006-low-signal",
+  "advice_type": "check_signal",
+  "ask_reason_on_skip_or_override": false,
+  "confidence": 0.68,
+  "effort_delta": 0,
+  "offer_swap": false,
+  "primary_text": "Signal quality slipped to 62%, so the data's sketchy.",
+  "projection": null,
+  "rest_seconds": 90,
+  "safety": {
+    "end_exercise": false,
+    "suppress_load_calls": true,
+  },
+  "secondary_text": "Reset the electrode, rest 90s, and retry at the same effort for clean guidance.",
+  "swap_candidate": null,
+  "telemetry_tags": [
+    "low_signal",
+    "check_signal",
+  ],
+}
+`;
+
+exports[`Fixture Snapshots > should match snapshot for no fatigue scenario 1`] = `
+{
+  "add_reps": 2,
+  "advice_id": "adv-002-no-fatigue",
+  "advice_type": "effort_change",
+  "ask_reason_on_skip_or_override": false,
+  "confidence": 0.91,
+  "effort_delta": 1,
+  "offer_swap": false,
+  "primary_text": "You breezed past the fatigue window—readiness is screaming green.",
+  "projection": {
+    "ci": 0.89,
+    "delta_hit_rate_pct": 18,
+  },
+  "rest_seconds": 90,
+  "safety": {
+    "end_exercise": false,
+    "suppress_load_calls": false,
+  },
+  "secondary_text": "Add two reps or bump effort +1, then rest 90s to turn that headroom into strength.",
+  "swap_candidate": null,
+  "telemetry_tags": [
+    "no_fatigue",
+    "effort_up",
+  ],
+}
+`;
+
+exports[`Fixture Snapshots > should match snapshot for pain flag scenario 1`] = `
+{
+  "add_reps": null,
+  "advice_id": "adv-005-pain",
+  "advice_type": "check_signal",
+  "ask_reason_on_skip_or_override": false,
+  "confidence": 0.76,
+  "effort_delta": 0,
+  "offer_swap": true,
+  "primary_text": "Pain signal lit up—no PR is worth grinding through that.",
+  "projection": null,
+  "rest_seconds": 90,
+  "safety": {
+    "end_exercise": false,
+    "suppress_load_calls": true,
+  },
+  "secondary_text": "Take 90s, then stop or swap to leg press if it still bites so the joint can calm down.",
+  "swap_candidate": "Leg press",
+  "telemetry_tags": [
+    "pain_flag",
+    "safety_check",
+  ],
+}
+`;

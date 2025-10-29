@@ -477,6 +477,17 @@ const coachContextPayload = useMemo(() => {
         ),
     );
     const latestSession = sessionsHistory.length > 0 ? sessionsHistory[sessionsHistory.length - 1] : null;
+
+    // Convert session history to coach-friendly format (last 3 sessions)
+    const sessionHistory = sessionsHistory.slice(-3).map((s) => ({
+        date: s.date,
+        readinessPre: s.pre ?? 0,
+        readinessPost: s.post ?? 0,
+        effectiveReps: s.effectReps ?? 0,
+        balanceScore: s.balanceScore ?? 0,
+        exercises: [], // TODO: Extract exercise names from reps if needed
+    }));
+
     return {
         readiness: readinessValue,
         sessionPhase: derivedCoachPhase,
@@ -493,6 +504,7 @@ const coachContextPayload = useMemo(() => {
         userFlags: {
             tired: coordinatorFatigueRef.current === 'fall',
         },
+        sessionHistory,
     };
 }, [coachFeedback?.cta?.action, derivedCoachPhase, initialReadinessScore, lastCompletedSet, postScore, readinessScore, sessionData?.currentReadiness, sessionsHistory, weeklyTrend]);
 const coachContextKeyRef = useRef<string>('');
@@ -2853,18 +2865,19 @@ useEffect(() => {
                     }}
                     onCancel={() => setAwaitingEndSetConfirm(false)}
                 />}
-                {/* New Gemini Live Voice Coach */}
-                <GeminiLiveCoach
-                    open={coachGate.canOpen && isCoachOpen}
-                    onClose={() => setCoachOpen(false)}
-                />
-
-                {/* Old text-based coach (commented out, can switch back if needed) */}
-                {/* <CoachDock
-                    open={coachGate.canOpen && isCoachOpen}
-                    onClose={() => setCoachOpen(false)}
-                    onSend={handleCoachSend}
-                /> */}
+                {/* Voice Coach: Use Gemini Live in dev, text-based in production */}
+                {import.meta.env.DEV ? (
+                    <GeminiLiveCoach
+                        open={coachGate.canOpen && isCoachOpen}
+                        onClose={() => setCoachOpen(false)}
+                    />
+                ) : (
+                    <CoachDock
+                        open={coachGate.canOpen && isCoachOpen}
+                        onClose={() => setCoachOpen(false)}
+                        onSend={handleCoachSend}
+                    />
+                )}
             </div>
         </div>
     );

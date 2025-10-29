@@ -19,7 +19,7 @@ import {
 import DropStack from './components/notify/DropStack';
 import RestCoach, { type RestCoachAction } from './components/coach/RestCoach';
 import { SlideUpLogPanel } from './components/SlideUpLogPanel';
-import type { ReadinessPrediction, RawPeakHistoryEntry, SensorStatus, SessionHistoryEntry, TrendPoint, CompletedSet, RecoveryTask, ChatMessage, CoachHomeFeedback, CoachIntent, StopSuggestion, CoachPrefs, CoachOutput, CoachCta, Rep } from './types';
+import type { ReadinessPrediction, RawPeakHistoryEntry, SensorStatus, SessionHistoryEntry, TrendPoint, CompletedSet, RecoveryTask, ChatMessage, CoachHomeFeedback, CoachIntent, StopSuggestion, CoachPrefs, CoachOutput, CoachCta, Rep, PlannedWorkoutSet } from './types';
 import type { FatigueState } from './lib/fatigue/FatigueDetector';
 import type { CoachFinalMessage } from './lib/coach/CoachMessageComposer';
 import type { CoachInsightStatus } from './hooks/useCoachInsightPipeline';
@@ -38,6 +38,9 @@ import {
   type CoachSetSummaryRecord,
   type SetSummaryMetrics,
 } from './lib/coach/setSummary';
+import PremiumPlanView from './components/plan/PremiumPlanView';
+import { PlanInlineSkeleton } from './components/plan/PlanInlineSkeleton';
+import type { PlanProps } from './types/plan';
 import { useRecovery } from './hooks/useRecovery';
 import type { Profile as RecoveryProfile, SessionFeatures as RecoverySession, EMG as RecoveryEMG } from './lib/recovery';
 import { z } from 'zod';
@@ -88,6 +91,14 @@ const RMS_MIN = 0.7;
 const RMS_MAX = 1.65;
 const clampValue = (value: number, min: number, max: number): number =>
   Math.max(min, Math.min(max, value));
+
+const formatLoadAdjustmentLabel = (
+  value: PlannedWorkoutSet['loadAdjustment'] | undefined | null,
+): string => {
+  if (!value || value === 'n/a') return 'Plan';
+  const friendly = String(value).replace(/_/g, ' ');
+  return friendly.charAt(0).toUpperCase() + friendly.slice(1);
+};
 
 const normalizePeakToRms = (peak: number): number => {
   const bounded = Math.max(0, Math.min(peak, 110));
@@ -912,17 +923,105 @@ interface PreTrainingScreenProps {
     onStart: () => void;
     onEndSession: () => void;
     getReadinessData: (score: number | null) => { color: string; word: string };
+    planView?: PlanProps | null;
+    onGeneratePlan?: () => void;
+    onAcceptPlan?: () => void;
+    isGeneratingPlan?: boolean;
+    planError?: string | null;
+    planAccepted?: boolean;
 }
-export const PreTrainingScreen: React.FC<PreTrainingScreenProps> = ({ score, rec, onStart, onEndSession, getReadinessData }) => {
+export const PreTrainingScreen: React.FC<PreTrainingScreenProps> = ({
+    score,
+    rec,
+    onStart,
+    onEndSession,
+    getReadinessData,
+    planView,
+    onGeneratePlan,
+    onAcceptPlan,
+    isGeneratingPlan = false,
+    planError,
+    planAccepted = false,
+}) => {
     const data = getReadinessData(score);
+    const hasPlan = Boolean(planView) && !isGeneratingPlan;
     return (
-        <div className="h-full flex flex-col p-4 animate-screen-in">
-            <div className="pt-8 px-2"><button onClick={onEndSession} className="text-gray-400 hover:text-white transition-colors p-2 -ml-2 button-press"><BackIcon /></button></div>
-            <div className="flex-1 flex flex-col items-center justify-center space-y-4 text-center">
-                <ReadinessArc score={score || 0} color={data.color} />
-                <div className="space-y-1"> <h2 className="text-xl font-medium" style={{ color: data.color }}>Ready to Train</h2> <p className="text-sm text-amber-300/90">{rec && rec.message}</p> </div>
+        <div className="flex h-full flex-col p-4 animate-screen-in">
+            <div className="px-2 pt-8">
+                <button onClick={onEndSession} className="button-press -ml-2 rounded-full p-2 text-gray-400 transition-colors hover:text-white">
+                    <BackIcon />
+                </button>
             </div>
-            <div className="w-full pb-4"> <button onClick={onStart} className="w-full bg-blue-600 text-white py-4 text-lg font-medium rounded-xl hover:bg-blue-700 transition-colors shadow-[0_4px_14px_0_rgb(59,130,246,0.39)] button-press">Start Workout</button> </div>
+            <div className="flex flex-1 flex-col items-center justify-center space-y-5 text-center">
+                <ReadinessArc score={score || 0} color={data.color} />
+                <div className="space-y-1">
+                    <h2 className="text-xl font-medium" style={{ color: data.color }}>
+                        Ready to Train
+                    </h2>
+                    <p className="text-sm text-amber-300/90">{rec?.message}</p>
+                </div>
+                <div className="w-full max-w-md space-y-3 text-left">
+                    <div className="rounded-3xl border border-white/10 bg-slate-900/70 p-5 shadow-lg backdrop-blur-md">
+                        <div className="flex items-center justify-between gap-3">
+                            <div>
+                                <p className="text-xs font-semibold uppercase tracking-[0.32em] text-white/50">
+                                    Today’s Plan
+                                </p>
+                                <p className="mt-1 text-sm text-white/80">
+                                    Build an AI-guided session from this readiness check.
+                                </p>
+                            </div>
+                            {planAccepted && (
+                                <span className="rounded-full bg-emerald-500/15 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-emerald-300">
+                                    Added
+                                </span>
+                            )}
+                        </div>
+                        <div className="mt-4 overflow-hidden rounded-2xl border border-white/5 bg-slate-950/60">
+                            {isGeneratingPlan ? (
+                                <PlanInlineSkeleton />
+                            ) : hasPlan && planView ? (
+                                <PremiumPlanView {...planView} />
+                            ) : (
+                                <div className="p-5 text-sm text-white/65">
+                                    Tap “Generate today’s workout” to get blocks, reps, and rest tailored to
+                                    this readiness score. Accept it to auto-load sets into your session.
+                                </div>
+                            )}
+                        </div>
+                        <div className="mt-4 flex flex-wrap items-center gap-2">
+                            <button
+                                type="button"
+                                onClick={onGeneratePlan}
+                                disabled={isGeneratingPlan || !onGeneratePlan}
+                                className="button-press rounded-2xl border border-blue-400/30 bg-blue-500/15 px-4 py-2 text-sm font-semibold text-blue-100 transition hover:border-blue-300/50 hover:bg-blue-500/25 disabled:cursor-not-allowed disabled:opacity-60"
+                            >
+                                {hasPlan ? 'Regenerate plan' : "Generate today's workout"}
+                            </button>
+                            {hasPlan && !planAccepted && (
+                                <button
+                                    type="button"
+                                    onClick={onAcceptPlan}
+                                    disabled={!onAcceptPlan}
+                                    className="button-press rounded-2xl bg-emerald-500 px-4 py-2 text-sm font-semibold text-white transition hover:bg-emerald-400"
+                                >
+                                    Use this plan
+                                </button>
+                            )}
+                        </div>
+                        {planError && <p className="mt-2 text-xs text-rose-300/90">{planError}</p>}
+                    </div>
+                </div>
+            </div>
+            <div className="w-full pb-4">
+                <button
+                    onClick={onStart}
+                    disabled={isGeneratingPlan}
+                    className="button-press w-full rounded-xl bg-blue-600 py-4 text-lg font-medium text-white shadow-[0_4px_14px_0_rgb(59,130,246,0.39)] transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                    {isGeneratingPlan ? 'Designing workout…' : 'Start Workout'}
+                </button>
+            </div>
         </div>
     );
 };
@@ -962,6 +1061,9 @@ interface TrainingScreenProps {
     onCoachEnd: () => void;
     onSetCoachSummary: (summary: CoachSetSummaryRecord | null) => void;
     recentSetReps: Rep[];
+    plannedSet?: PlannedWorkoutSet | null;
+    plannedNextSet?: PlannedWorkoutSet | null;
+    plannedProgress?: { completed: number; total: number } | null;
 }
 export const TrainingScreen: React.FC<TrainingScreenProps> = ({
     onEnd, onSimulateRep, sessionData, onEndSet, sessionPhase, onboardStep, onSetOnboardStep, 
@@ -972,6 +1074,7 @@ export const TrainingScreen: React.FC<TrainingScreenProps> = ({
     awaitingEndSetConfirm, undoInfo, onUndo,
     restSummary, coachOutput, coachMessage, coachMessageStatus,
     onCoachContinue, onCoachEnd, onSetCoachSummary, recentSetReps,
+    plannedSet, plannedNextSet, plannedProgress,
 }) => {    const isFatigued = sessionData?.fatigueDetected || false;
     const preventAutoResume = Boolean(stopSuggestion);
     const suggestionReasons = useMemo(() => (stopSuggestion ? stopSuggestion.reasons.slice(0, 2).map(formatSuggestionReason) : []), [stopSuggestion]);
@@ -1108,18 +1211,7 @@ export const TrainingScreen: React.FC<TrainingScreenProps> = ({
         }
     }, [showSuggestionReasons]);
 
-    useEffect(() => {
-        if (animationStage === 'line') {
-            setShowSetLoggingPanel(false);
-            setExerciseQuery('');
-            setSelectedExercise(null);
-            setWeightEntry('');
-            setLogFeedback(null);
-            setLogError(null);
-        } else if (animationStage === 'rest') {
-            setShowSetLoggingPanel(true);
-        }
-    }, [animationStage]);
+    
 
     const memoisedRestSummary = useMemo(() => restSummary ?? {
         preReadiness: preSetReadiness ?? sessionData?.currentReadiness ?? 0,
@@ -1165,6 +1257,52 @@ export const TrainingScreen: React.FC<TrainingScreenProps> = ({
     const [loggedData, setLoggedData] = useState<{ exercise: string; weight: string } | null>(null);
     const [logFeedback, setLogFeedback] = useState<string | null>(null);
     const [logError, setLogError] = useState<string | null>(null);
+
+    const plannedLoadLabel = useMemo(() => {
+        if (!plannedSet) return '';
+        return formatLoadAdjustmentLabel(plannedSet.loadAdjustment);
+    }, [plannedSet]);
+    const plannedNextLoadLabel = useMemo(() => {
+        if (!plannedNextSet) return '';
+        return formatLoadAdjustmentLabel(plannedNextSet.loadAdjustment);
+    }, [plannedNextSet]);
+    const plannedCurrentSummary = useMemo(() => {
+        if (!plannedSet) return null;
+        const parts = [plannedSet.reps ?? 'coach-guided'];
+        if (plannedSet.tempo) parts.push(plannedSet.tempo);
+        if (plannedLoadLabel) parts.push(plannedLoadLabel);
+        return parts.filter(Boolean).join(' · ');
+    }, [plannedSet, plannedLoadLabel]);
+    const plannedNextSummary = useMemo(() => {
+        if (!plannedNextSet) return null;
+        const parts = [plannedNextSet.reps ?? 'coach-guided'];
+        if (plannedNextSet.tempo) parts.push(plannedNextSet.tempo);
+        if (plannedNextLoadLabel) parts.push(plannedNextLoadLabel);
+        return parts.filter(Boolean).join(' · ');
+    }, [plannedNextSet, plannedNextLoadLabel]);
+
+    useEffect(() => {
+        if (animationStage === 'line') {
+            setShowSetLoggingPanel(false);
+            if (plannedSet) {
+                const exerciseName = plannedSet.exerciseName;
+                setExerciseQuery(exerciseName);
+                setSelectedExercise(exerciseName);
+                setWeightEntry(plannedLoadLabel || 'Plan');
+                setLogFeedback('Plan pre-filled. Add reps and tap save.');
+            } else {
+                setExerciseQuery('');
+                setSelectedExercise(null);
+                setWeightEntry('');
+                setLogFeedback(null);
+            }
+            setSetIsLogged(false);
+            setLoggedData(null);
+            setLogError(null);
+        } else if (animationStage === 'rest') {
+            setShowSetLoggingPanel(true);
+        }
+    }, [animationStage, plannedSet, plannedLoadLabel]);
 
     const emitTelemetry = useCallback(
         (event: { type: 'coach_advice_shown'; zone: Zone; fatigue_rep: number | null } | { type: 'coach_user_decision'; decision: RestCoachAction }) => {
@@ -1594,6 +1732,16 @@ export const TrainingScreen: React.FC<TrainingScreenProps> = ({
         onToggleSuppressStops(!coachPrefs.suppressStopsForSession);
     }, [onToggleSuppressStops, coachPrefs.suppressStopsForSession]);
 
+    const formatLoggedWeight = useCallback((value: string) => {
+        const trimmed = value.trim();
+        const numeric = Number(trimmed);
+        if (!trimmed.length) return trimmed;
+        if (!Number.isNaN(numeric)) {
+            return `${numeric} lbs`;
+        }
+        return trimmed;
+    }, []);
+
     const renderPostSetScreen = () => {
         const preScore = memoisedRestSummary.preReadiness ?? preSetReadiness ?? 0;
         const finalReadiness = memoisedRestSummary.postReadiness ?? preScore;
@@ -1650,6 +1798,34 @@ export const TrainingScreen: React.FC<TrainingScreenProps> = ({
                             )}
                         </div>
                     ) : null}
+                    {plannedNextSet && (
+                        <div className="w-full max-w-sm rounded-3xl border border-white/10 bg-slate-900/70 px-6 py-5 text-left text-white shadow-2xl backdrop-blur-lg transition-all duration-500 animate-in fade-in slide-in-from-bottom-4">
+                            <p className="text-[10px] font-semibold uppercase tracking-[0.3em] text-white/40">
+                                Up Next
+                            </p>
+                            <p className="mt-2 text-sm font-semibold text-white">{plannedNextSet.exerciseName}</p>
+                            <p className="mt-1 text-xs text-white/70">
+                                Set {plannedNextSet.setIndex + 1} of {plannedNextSet.totalSets}
+                                {plannedNextSummary ? ` · ${plannedNextSummary}` : ''}
+                            </p>
+                            {plannedProgress && plannedProgress.total > 0 && (
+                                <p className="mt-2 text-[11px] text-white/45">
+                                    {Math.min(plannedProgress.completed, plannedProgress.total)} / {plannedProgress.total} sets logged
+                                </p>
+                            )}
+                        </div>
+                    )}
+                    {plannedSet && !setIsLogged && (
+                        <div className="w-full max-w-sm rounded-3xl border border-white/10 bg-slate-900/60 px-6 py-4 text-left text-white shadow-2xl backdrop-blur-lg transition-all duration-500 animate-in fade-in slide-in-from-bottom-4">
+                            <p className="text-[10px] font-semibold uppercase tracking-[0.3em] text-white/35">
+                                Just logged
+                            </p>
+                            <p className="mt-2 text-sm font-semibold text-white">{plannedSet.exerciseName}</p>
+                            {plannedCurrentSummary && (
+                                <p className="mt-1 text-xs text-white/65">{plannedCurrentSummary}</p>
+                            )}
+                        </div>
+                    )}
                     <div className="w-full max-w-sm space-y-3">
                         {/* Simple Status Indicator for Logging */}
                         {setIsLogged ? (
@@ -1669,7 +1845,8 @@ export const TrainingScreen: React.FC<TrainingScreenProps> = ({
                                     </div>
                                     {loggedData && (
                                         <p className="text-xs text-emerald-300/80 font-medium">
-                                            {loggedData.weight} lbs • {loggedData.exercise}
+                                            {formatLoggedWeight(loggedData.weight)}
+                                            {loggedData.exercise ? ` • ${loggedData.exercise}` : ''}
                                         </p>
                                     )}
                                     <span className="text-xs text-emerald-400/60 mt-0.5">Tap to edit</span>

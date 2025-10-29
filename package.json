@@ -1,0 +1,48 @@
+{
+  "name": "symmetric-neuromuscular-readiness",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "predev": "node scripts/embed-env.mjs",
+    "dev": "vite",
+    "dev:logset": "vite logset-demo.html",
+    "prebuild": "node scripts/embed-env.mjs",
+    "build": "vite build",
+    "preview": "vite preview",
+    "test": "node scripts/run-fatigue-tests.mjs",
+    "test:coach": "vitest run src/tests/coach.contract.test.ts",
+    "test:coach:watch": "vitest src/tests/coach.contract.test.ts",
+    "server": "tsx server/index.ts",
+    "server:watch": "tsx watch server/index.ts"
+  },
+  "dependencies": {
+    "@google/genai": "^1.22.0",
+    "classnames": "^2.5.1",
+    "dotenv": "^17.2.3",
+    "framer-motion": "^12.23.24",
+    "lucide-react": "^0.545.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "zod": "^4.1.12"
+  },
+  "devDependencies": {
+    "@netlify/functions": "^5.0.1",
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.0",
+    "@types/jest": "^30.0.0",
+    "@types/node": "^22.14.0",
+    "@vitejs/plugin-react": "^5.0.0",
+    "@vitest/ui": "^3.2.4",
+    "autoprefixer": "^10.4.21",
+    "jest": "^30.2.0",
+    "jest-environment-jsdom": "^30.2.0",
+    "postcss": "^8.5.6",
+    "tailwindcss": "^3.4.18",
+    "ts-jest": "^29.4.5",
+    "tsx": "^4.20.6",
+    "typescript": "~5.8.2",
+    "vite": "^6.2.0",
+    "vitest": "^3.2.4"
+  }
+}
