@@ -402,5 +402,5 @@ export function createLiveCoachGateway(port: number) {
 }
 
 // Start server if run directly
-const port = Number(process.env.COACH_WS_PORT ?? 8787);
+const port = Number(process.env.PORT ?? process.env.COACH_WS_PORT ?? 8787);
 createLiveCoachGateway(port);

@@ -14,7 +14,8 @@
     "test:coach": "vitest run src/tests/coach.contract.test.ts",
     "test:coach:watch": "vitest src/tests/coach.contract.test.ts",
     "server": "tsx server/index.ts",
-    "server:watch": "tsx watch server/index.ts"
+    "server:watch": "tsx watch server/index.ts",
+    "gateway": "tsx server/ws/live-coach.ts"
   },
   "dependencies": {
     "@google/genai": "^1.22.0",

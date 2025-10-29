@@ -2,7 +2,28 @@ import { useState, useRef, useCallback, useEffect } from 'react';
 import { CoachContextBus } from '../coach/CoachContextBus';
 import type { CoachContext, CoachEvent } from '../coach/CoachContextBus';
 
-const WS_URL = 'ws://localhost:8889';
+const resolveWsUrl = (): string => {
+  if (typeof globalThis !== 'undefined') {
+    const runtime = (globalThis as any).__COACH_WS_URL__;
+    if (typeof runtime === 'string' && runtime.trim()) {
+      return runtime.trim();
+    }
+  }
+
+  const envUrl = typeof import.meta !== 'undefined' && import.meta.env ? (import.meta.env as any).VITE_COACH_WS_URL : undefined;
+  if (envUrl && typeof envUrl === 'string' && envUrl.trim()) {
+    return envUrl.trim();
+  }
+
+  if (typeof window !== 'undefined' && window.location) {
+    const scheme = window.location.protocol === 'https:' ? 'wss' : 'ws';
+    return `${scheme}://${window.location.host}/coach`;
+  }
+
+  return 'ws://localhost:8889/coach';
+};
+
+const WS_URL = resolveWsUrl();
 
 type GeminiLiveState = 'disconnected' | 'connecting' | 'connected' | 'error';
 
@@ -46,6 +67,22 @@ export function useGeminiLive() {
 
   type StopReason = 'manual' | 'silence' | 'timeout' | 'no_input';
 
+  const clearProcessingTimeout = useCallback(() => {
+    if (processingTimeoutRef.current != null) {
+      window.clearTimeout(processingTimeoutRef.current);
+      processingTimeoutRef.current = null;
+    }
+  }, []);
+
+  const armProcessingTimeout = useCallback(() => {
+    clearProcessingTimeout();
+    processingTimeoutRef.current = window.setTimeout(() => {
+      console.log('[GeminiLive] Processing timeout - no response from Gemini');
+      setStage('idle');
+      setTranscript('');
+    }, PROCESSING_TIMEOUT_MS);
+  }, [PROCESSING_TIMEOUT_MS, clearProcessingTimeout]);
+
   // Play audio from Gemini response
   const playAudioBuffer = async (arrayBuffer: ArrayBuffer) => {
     try {
@@ -57,6 +94,7 @@ export function useGeminiLive() {
       }
 
       console.log('[GeminiLive] Processing audio buffer, size:', arrayBuffer.byteLength, 'bytes');
+      clearProcessingTimeout();
 
       // The server sends raw PCM16 data at 24kHz
       const int16Array = new Int16Array(arrayBuffer);
@@ -93,6 +131,7 @@ export function useGeminiLive() {
       setStage('speaking');
 
       source.onended = () => {
+        clearProcessingTimeout();
         audioQueueRef.current = audioQueueRef.current.filter((node) => node !== source);
         if (audioQueueRef.current.length === 0) {
           playbackTimeRef.current = 0;
@@ -128,6 +167,11 @@ export function useGeminiLive() {
     if (autoStopTimeoutRef.current != null) {
       window.clearTimeout(autoStopTimeoutRef.current);
       autoStopTimeoutRef.current = null;
+    }
+
+    if (processingTimeoutRef.current != null) {
+      window.clearTimeout(processingTimeoutRef.current);
+      processingTimeoutRef.current = null;
     }
 
     try {
@@ -272,14 +316,9 @@ export function useGeminiLive() {
       setStage('idle');
     } else {
       setStage('processing');
-      // Set timeout for processing - if Gemini doesn't respond in 8s, go back to idle
-      processingTimeoutRef.current = window.setTimeout(() => {
-        console.log('[GeminiLive] Processing timeout - no response from Gemini');
-        setStage('idle');
-        setTranscript('');
-      }, PROCESSING_TIMEOUT_MS);
+      armProcessingTimeout();
     }
-  }, [setStage, setTranscript, PROCESSING_TIMEOUT_MS]);
+  }, [setStage, setTranscript, armProcessingTimeout]);
 
   const connect = useCallback(async () => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
@@ -317,18 +356,22 @@ export function useGeminiLive() {
 
             switch (message.type) {
               case 'ready':
+                clearProcessingTimeout();
                 setStage(listening ? 'listening' : 'idle');
                 break;
               case 'final_stt':
                 setTranscript(message.text ?? '');
                 setStage('processing');
+                armProcessingTimeout();
                 break;
               case 'assistant_audio_end':
+                clearProcessingTimeout();
                 setStage(listening ? 'listening' : 'idle');
                 break;
               case 'error':
                 console.error('[GeminiLive] Error:', message.message);
                 stopListening({ reason: 'no_input' });
+                clearProcessingTimeout();
                 setState('error');
                 setStage('idle');
                 break;
@@ -377,7 +420,7 @@ export function useGeminiLive() {
       setState('error');
       setStage('idle');
     }
-  }, [playAudioBuffer, stopListening]);
+  }, [armProcessingTimeout, clearProcessingTimeout, playAudioBuffer, stopListening]);
 
   // Disconnect
   const disconnect = useCallback(() => {
