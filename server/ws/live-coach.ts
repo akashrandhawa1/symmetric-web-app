@@ -216,7 +216,7 @@ export function createLiveCoachGateway(port: number) {
         // Send setup message to Gemini
         const setupMessage = {
           setup: {
-            model: 'models/gemini-2.0-flash-lite',
+            model: 'models/gemini-2.5-flash-live',
             generation_config: {
               response_modalities: ['AUDIO'],
               speech_config: {
