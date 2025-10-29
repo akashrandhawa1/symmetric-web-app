@@ -175,7 +175,10 @@ Keep responses under 60 words. No medical advice or singing/voice training.`
 };
 
 export function createLiveCoachGateway(port: number) {
-  const httpServer = createServer();
+  const httpServer = createServer((req, res) => {
+    res.writeHead(200, { 'Content-Type': 'text/plain' });
+    res.end('Coach Milo gateway online\n');
+  });
   const wss = new WebSocketServer({ server: httpServer });
 
   wss.on('connection', async (clientWs, request) => {
