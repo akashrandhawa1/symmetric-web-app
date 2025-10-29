@@ -2865,8 +2865,9 @@ useEffect(() => {
                     }}
                     onCancel={() => setAwaitingEndSetConfirm(false)}
                 />}
-                {/* Voice Coach: Use Gemini Live in dev, text-based in production */}
-                {import.meta.env.DEV ? (
+                {/* Voice Coach: prefer Gemini Live when coach API is enabled */}
+                {(import.meta.env.VITE_ENABLE_COACH_API === '1' ||
+                    (typeof window !== 'undefined' && ((window as any).__ENABLE_COACH_API__ ?? '').toString() === '1')) ? (
                     <GeminiLiveCoach
                         open={coachGate.canOpen && isCoachOpen}
                         onClose={() => setCoachOpen(false)}
