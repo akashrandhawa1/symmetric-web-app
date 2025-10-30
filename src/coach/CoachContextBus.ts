@@ -13,6 +13,26 @@ export type CoachSessionSummary = {
   exercises?: string[];
 };
 
+export type CoachPlanSet = {
+  exercise: string;
+  blockLabel?: string | null;
+  setNumber?: number;
+  totalSets?: number;
+  reps?: string | null;
+  tempo?: string | null;
+  restSeconds?: number | null;
+  loadAdjustment?: string | null;
+};
+
+export type CoachPlanContext = {
+  intent?: string | null;
+  totalSets?: number | null;
+  completedSets?: number | null;
+  remainingSets?: number | null;
+  last?: CoachPlanSet | null;
+  next?: CoachPlanSet | null;
+};
+
 export type CoachContext = {
   readiness: number;
   sessionPhase: CoachContextPhase;
@@ -47,6 +67,7 @@ export type CoachContext = {
     right_pct: number;
   };
   timeLeftMin?: number;
+  plan?: CoachPlanContext | null;
 };
 
 export type CoachEventType =
@@ -71,6 +92,7 @@ class CoachContextBusImpl {
     readiness: 75,
     sessionPhase: 'intro',
     goal: 'build_strength',
+    plan: null,
   };
 
   private listeners: Set<Listener> = new Set();
@@ -104,6 +126,7 @@ class CoachContextBusImpl {
         ...this.snapshot.userFlags,
         ...next.userFlags,
       },
+      plan: next.plan !== undefined ? next.plan ?? null : this.snapshot.plan,
     };
 
     if (eventPayload) {

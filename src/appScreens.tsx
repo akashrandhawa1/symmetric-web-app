@@ -18,6 +18,8 @@ import {
 } from './components';
 import DropStack from './components/notify/DropStack';
 import RestCoach, { type RestCoachAction } from './components/coach/RestCoach';
+import { GeminiLiveCoach } from './components/coach/GeminiLiveCoach';
+import { CoachContextBus } from './coach/CoachContextBus';
 import { SlideUpLogPanel } from './components/SlideUpLogPanel';
 import type { ReadinessPrediction, RawPeakHistoryEntry, SensorStatus, SessionHistoryEntry, TrendPoint, CompletedSet, RecoveryTask, ChatMessage, CoachHomeFeedback, CoachIntent, StopSuggestion, CoachPrefs, CoachOutput, CoachCta, Rep, PlannedWorkoutSet } from './types';
 import type { FatigueState } from './lib/fatigue/FatigueDetector';
@@ -945,6 +947,17 @@ export const PreTrainingScreen: React.FC<PreTrainingScreenProps> = ({
 }) => {
     const data = getReadinessData(score);
     const hasPlan = Boolean(planView) && !isGeneratingPlan;
+    const [showCoach, setShowCoach] = React.useState(false);
+
+    // Set app surface for state-aware coaching
+    React.useEffect(() => {
+        CoachContextBus.publishContext({
+            appSurface: 'pre_session',
+            readiness: score ?? 75,
+            readinessTarget: 50,
+        });
+    }, [score]);
+
     return (
         <div className="flex h-full flex-col p-4 animate-screen-in">
             <div className="px-2 pt-8">
@@ -1013,7 +1026,13 @@ export const PreTrainingScreen: React.FC<PreTrainingScreenProps> = ({
                     </div>
                 </div>
             </div>
-            <div className="w-full pb-4">
+            <div className="w-full space-y-3 pb-4">
+                <button
+                    onClick={() => setShowCoach(true)}
+                    className="button-press w-full rounded-xl border border-purple-400/30 bg-purple-500/15 py-4 text-lg font-medium text-purple-100 shadow-[0_4px_14px_0_rgb(168,85,247,0.25)] transition-colors hover:border-purple-300/50 hover:bg-purple-500/25"
+                >
+                    🎙️ Talk to Coach
+                </button>
                 <button
                     onClick={onStart}
                     disabled={isGeneratingPlan}
@@ -1022,6 +1041,9 @@ export const PreTrainingScreen: React.FC<PreTrainingScreenProps> = ({
                     {isGeneratingPlan ? 'Designing workout…' : 'Start Workout'}
                 </button>
             </div>
+
+            {/* Voice Coach Modal */}
+            <GeminiLiveCoach open={showCoach} onClose={() => setShowCoach(false)} />
         </div>
     );
 };

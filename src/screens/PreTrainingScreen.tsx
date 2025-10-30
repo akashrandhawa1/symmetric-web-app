@@ -1,8 +1,10 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { BackIcon } from '../constants';
 import { ReadinessArc } from '../components/ReadinessArc';
 import PremiumPlanView from '../components/plan/PremiumPlanView';
 import { PlanInlineSkeleton } from '../components/plan/PlanInlineSkeleton';
+import { GeminiLiveCoach } from '../components/coach/GeminiLiveCoach';
+import { CoachContextBus } from '../coach/CoachContextBus';
 import type { PlanProps } from '../types/plan';
 
 interface PreTrainingScreenProps {
@@ -34,6 +36,16 @@ export const PreTrainingScreen: React.FC<PreTrainingScreenProps> = ({
 }) => {
     const data = getReadinessData(score);
     const hasPlan = Boolean(planView) && !isGeneratingPlan;
+    const [showCoach, setShowCoach] = useState(false);
+
+    // Set app surface for state-aware coaching
+    useEffect(() => {
+        CoachContextBus.publishContext({
+            appSurface: 'pre_session',
+            readiness: score ?? 75,
+            readinessTarget: 50,
+        });
+    }, [score]);
 
     return (
         <div className="flex h-full flex-col p-4 animate-screen-in">
@@ -113,7 +125,13 @@ export const PreTrainingScreen: React.FC<PreTrainingScreenProps> = ({
                 </div>
             </div>
 
-            <div className="w-full pb-4">
+            <div className="w-full space-y-3 pb-4">
+                <button
+                    onClick={() => setShowCoach(true)}
+                    className="button-press w-full rounded-xl border border-purple-400/30 bg-purple-500/15 py-4 text-lg font-medium text-purple-100 shadow-[0_4px_14px_0_rgb(168,85,247,0.25)] transition-colors hover:border-purple-300/50 hover:bg-purple-500/25"
+                >
+                    🎙️ Talk to Coach
+                </button>
                 <button
                     onClick={onStart}
                     disabled={isGeneratingPlan}
@@ -122,6 +140,9 @@ export const PreTrainingScreen: React.FC<PreTrainingScreenProps> = ({
                     {isGeneratingPlan ? 'Designing workout…' : 'Start Workout'}
                 </button>
             </div>
+
+            {/* Voice Coach Modal */}
+            <GeminiLiveCoach open={showCoach} onClose={() => setShowCoach(false)} />
         </div>
     );
 };

@@ -18,6 +18,26 @@ type CoachSessionSummary = {
   exercises?: string[];
 };
 
+type CoachPlanSet = {
+  exercise: string;
+  blockLabel?: string | null;
+  setNumber?: number | null;
+  totalSets?: number | null;
+  reps?: string | null;
+  tempo?: string | null;
+  restSeconds?: number | null;
+  loadAdjustment?: string | null;
+};
+
+type CoachPlanContext = {
+  intent?: string | null;
+  totalSets?: number | null;
+  completedSets?: number | null;
+  remainingSets?: number | null;
+  last?: CoachPlanSet | null;
+  next?: CoachPlanSet | null;
+};
+
 type CoachContext = {
   readiness: number;
   sessionPhase: string;
@@ -38,6 +58,7 @@ type CoachContext = {
     pain?: boolean;
   };
   sessionHistory?: CoachSessionSummary[];
+  plan?: CoachPlanContext | null;
 };
 
 type CoachEvent = {
@@ -84,6 +105,29 @@ const summariseContext = (ctx?: CoachContext, events: CoachEvent[] = []): string
     lines.push(parts.join(', '));
   }
 
+  const describePlanSet = (set: CoachPlanSet | null | undefined): string | null => {
+    if (!set) return null;
+    const parts: string[] = [];
+    const setLabel = set.setNumber && set.totalSets
+      ? `set ${set.setNumber}/${set.totalSets}`
+      : set.setNumber
+        ? `set ${set.setNumber}`
+        : null;
+    const baseName = set.exercise ?? 'set';
+    const name = set.blockLabel ? `${baseName} (${set.blockLabel})` : baseName;
+    parts.push(name);
+    if (setLabel) parts.push(setLabel);
+    if (set.reps) parts.push(`${set.reps} reps`);
+    if (set.tempo) parts.push(`tempo ${set.tempo}`);
+    if (typeof set.restSeconds === 'number' && Number.isFinite(set.restSeconds)) {
+      parts.push(`rest ${Math.round(set.restSeconds)}s`);
+    }
+    if (set.loadAdjustment && set.loadAdjustment !== 'n/a') {
+      parts.push(`load ${set.loadAdjustment}`);
+    }
+    return parts.join(', ');
+  };
+
   // Session history (last 2 workouts for speed)
   if (ctx.sessionHistory && ctx.sessionHistory.length > 0) {
     lines.push('');
@@ -107,6 +151,35 @@ const summariseContext = (ctx?: CoachContext, events: CoachEvent[] = []): string
 
       lines.push(`• ${parts.join(', ')}`);
     });
+  }
+
+  const plan = ctx.plan;
+  if (plan) {
+    const planLines: string[] = [];
+    if (plan.intent) {
+      const intentLabel = plan.intent.replace(/_/g, ' ');
+      planLines.push(`Intent ${intentLabel}`);
+    }
+    if (typeof plan.totalSets === 'number' && plan.totalSets > 0) {
+      const completed = typeof plan.completedSets === 'number' ? plan.completedSets : 0;
+      const remaining = typeof plan.remainingSets === 'number'
+        ? plan.remainingSets
+        : Math.max(0, plan.totalSets - completed);
+      planLines.push(`Sets ${completed}/${plan.totalSets} done (${remaining} remaining)`);
+    }
+    const lastPlanSet = describePlanSet(plan.last);
+    const nextPlanSet = describePlanSet(plan.next);
+    if (lastPlanSet) {
+      planLines.push(`Last planned set: ${lastPlanSet}`);
+    }
+    if (nextPlanSet) {
+      planLines.push(`Next planned set: ${nextPlanSet}`);
+    }
+    if (planLines.length > 0) {
+      lines.push('');
+      lines.push('Session plan:');
+      planLines.forEach((line) => lines.push(`• ${line}`));
+    }
   }
 
   // Recent events (less important now that we have session history)
@@ -256,6 +329,10 @@ export function createLiveCoachGateway(port: number) {
                     type: 'final_stt',
                     text: part.text,
                   }));
+                  clientWs.send(JSON.stringify({
+                    type: 'assistant_text',
+                    text: part.text,
+                  }));
                 }
 
                 if (part.inlineData?.mimeType?.startsWith('audio/pcm')) {
@@ -310,61 +387,83 @@ export function createLiveCoachGateway(port: number) {
       }
 
       // Handle JSON messages from client
-      if (typeof data === 'string' || (data instanceof Buffer && data.length < 500)) {
-        try {
-          const text = typeof data === 'string' ? data : data.toString('utf8');
-          const message = JSON.parse(text);
-          console.log('[LiveCoach] Client message:', message.type);
+      if (typeof data === 'string' || data instanceof Buffer) {
+        let text: string | null = null;
+        if (typeof data === 'string') {
+          text = data;
+        } else {
+          let firstNonWhitespace: number | undefined;
+          for (let i = 0; i < data.length; i += 1) {
+            const byte = data[i];
+            if (byte === 9 || byte === 10 || byte === 13 || byte === 32) continue; // tab, lf, cr, space
+            firstNonWhitespace = byte;
+            break;
+          }
+          if (firstNonWhitespace === 123 || firstNonWhitespace === 91) {
+            text = data.toString('utf8');
+          }
+        }
 
-          switch (message.type) {
-            case 'context_update':
-              updateSessionContext(session, message.context, message.events);
-              primeGeminiWithContext(session);
-              break;
-            case 'ptt_start':
-              updateSessionContext(session, message.context, message.events);
-              primeGeminiWithContext(session);
-              console.log('[LiveCoach] PTT started, ready for audio');
-              break;
+        if (text == null) {
+          // Not JSON-like, skip to audio handling
+        } else {
+          const firstChar = text.trimStart().charAt(0);
+          if (firstChar === '{' || firstChar === '[') {
+            try {
+              const message = JSON.parse(text);
+              console.log('[LiveCoach] Client message:', message.type);
 
-            case 'audio_end':
-              // End of audio stream - Don't send anything to Gemini
-              // Gemini will automatically detect the end of speech and respond
-              console.log('[LiveCoach] Audio stream ended, waiting for Gemini response');
-              break;
-
-            case 'barge_in':
-              // Interrupt Gemini
-              session.geminiWs.send(JSON.stringify({
-                clientContent: {
-                  turnComplete: true
-                }
-              }));
-              break;
-
-            case 'user_turn':
-              // Text-based turn
-              if (message.text) {
+            switch (message.type) {
+              case 'context_update':
                 updateSessionContext(session, message.context, message.events);
                 primeGeminiWithContext(session);
-                const summary = summariseContext(session.context, session.events);
-                const promptText = summary
-                  ? `${summary}\n\nAthlete said: ${message.text}`
-                  : message.text;
+                break;
+              case 'ptt_start':
+                updateSessionContext(session, message.context, message.events);
+                primeGeminiWithContext(session);
+                console.log('[LiveCoach] PTT started, ready for audio');
+                break;
+
+              case 'audio_end':
+                // End of audio stream - Don't send anything to Gemini
+                // Gemini will automatically detect the end of speech and respond
+                console.log('[LiveCoach] Audio stream ended, waiting for Gemini response');
+                break;
+
+              case 'barge_in':
+                // Interrupt Gemini
                 session.geminiWs.send(JSON.stringify({
                   clientContent: {
-                    turns: [{
-                      role: 'user',
-                      parts: [{ text: promptText }]
-                    }],
                     turnComplete: true
                   }
                 }));
-              }
-              break;
+                break;
+
+              case 'user_turn':
+                // Text-based turn
+                if (message.text) {
+                  updateSessionContext(session, message.context, message.events);
+                  primeGeminiWithContext(session);
+                  const summary = summariseContext(session.context, session.events);
+                  const promptText = summary
+                    ? `${summary}\n\nAthlete said: ${message.text}`
+                    : message.text;
+                  session.geminiWs.send(JSON.stringify({
+                    clientContent: {
+                      turns: [{
+                        role: 'user',
+                        parts: [{ text: promptText }]
+                      }],
+                      turnComplete: true
+                    }
+                  }));
+                }
+                break;
+            }
+            return;
+          } catch (err) {
+            // Not JSON, might be audio buffer
           }
-        } catch (err) {
-          // Not JSON, might be audio buffer
         }
       }
 

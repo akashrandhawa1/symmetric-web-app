@@ -9,6 +9,8 @@
 
 import React, { useState, useEffect } from 'react';
 import { SlideUpLogPanel } from '@/components/SlideUpLogPanel';
+import { GeminiLiveCoach } from '../components/coach/GeminiLiveCoach';
+import { CoachContextBus } from '../coach/CoachContextBus';
 
 interface RestScreenProps {
   /** Exercise name */
@@ -32,6 +34,7 @@ export function RestScreen({
 }: RestScreenProps) {
   const [timer, setTimer] = useState(restSeconds);
   const [showLogPanel, setShowLogPanel] = useState(false);
+  const [showCoach, setShowCoach] = useState(false);
 
   // Countdown timer
   useEffect(() => {
@@ -63,6 +66,14 @@ export function RestScreen({
       setShowLogPanel(true);
     }, 500);
     return () => clearTimeout(timer);
+  }, []);
+
+  // Set app surface for state-aware coaching
+  useEffect(() => {
+    CoachContextBus.publishContext({
+      appSurface: 'rest_overlay',
+      sessionPhase: 'rest',
+    });
   }, []);
 
   const handleManualLog = () => {
@@ -112,6 +123,13 @@ export function RestScreen({
 
           {/* Action Buttons */}
           <div className="space-y-3">
+            <button
+              type="button"
+              onClick={() => setShowCoach(true)}
+              className="w-full h-12 rounded-xl border-2 border-purple-300 bg-purple-50 text-purple-700 font-semibold hover:bg-purple-100 active:bg-purple-200 transition-colors"
+            >
+              🎙️ Talk to Coach
+            </button>
             <button
               type="button"
               onClick={handleManualLog}
@@ -165,6 +183,9 @@ export function RestScreen({
         initialExercise={exerciseName}
         initialWeight="95"
       />
+
+      {/* Voice Coach Modal */}
+      <GeminiLiveCoach open={showCoach} onClose={() => setShowCoach(false)} />
     </div>
   );
 }

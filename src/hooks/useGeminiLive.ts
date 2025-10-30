@@ -42,6 +42,7 @@ export function useGeminiLive() {
   const [state, setState] = useState<GeminiLiveState>('disconnected');
   const [isListening, setIsListening] = useState(false);
   const [transcript, setTranscript] = useState('');
+  const [assistantText, setAssistantText] = useState('');
   const [stage, setStage] = useState<'idle' | 'listening' | 'processing' | 'speaking'>('idle');
 
   const wsRef = useRef<WebSocket | null>(null);
@@ -61,9 +62,9 @@ export function useGeminiLive() {
 
   const SILENCE_THRESHOLD = 0.008;
   const SILENCE_FRAMES_REQUIRED = 5;
-  const NO_INPUT_TIMEOUT_MS = 1800;
-  const MAX_LISTEN_DURATION_MS = 15000;
-  const PROCESSING_TIMEOUT_MS = 8000; // 8 seconds max processing time
+  const NO_INPUT_TIMEOUT_MS = 5000; // 5 seconds to start speaking (was 1.8s - too short!)
+  const MAX_LISTEN_DURATION_MS = 20000; // 20 seconds max listen duration (was 15s)
+  const PROCESSING_TIMEOUT_MS = 12000; // 12 seconds max processing time (was 8s)
 
   type StopReason = 'manual' | 'silence' | 'timeout' | 'no_input';
 
@@ -160,6 +161,7 @@ export function useGeminiLive() {
     console.log('[GeminiLive] Starting to listen...');
     setStage('listening');
     setTranscript('');
+    setAssistantText('');
 
     silenceFramesRef.current = 0;
     speechDetectedRef.current = false;
@@ -267,6 +269,7 @@ export function useGeminiLive() {
       if (reason === 'no_input' || reason === 'timeout') {
         setStage('idle');
         setTranscript('');
+        setAssistantText('');
       }
       return;
     }
@@ -311,10 +314,13 @@ export function useGeminiLive() {
 
     if (!hadSpeech && (reason === 'no_input' || reason === 'timeout')) {
       setTranscript('');
+      setAssistantText('');
       setStage('idle');
     } else if (!hadSpeech && reason === 'manual') {
+      setAssistantText('');
       setStage('idle');
     } else {
+      setAssistantText('');
       setStage('processing');
       armProcessingTimeout();
     }
@@ -357,6 +363,7 @@ export function useGeminiLive() {
             switch (message.type) {
               case 'ready':
                 clearProcessingTimeout();
+                setAssistantText('');
                 setStage(listening ? 'listening' : 'idle');
                 break;
               case 'final_stt':
@@ -366,14 +373,21 @@ export function useGeminiLive() {
                 break;
               case 'assistant_audio_end':
                 clearProcessingTimeout();
+                setAssistantText('');
                 setStage(listening ? 'listening' : 'idle');
                 break;
               case 'error':
                 console.error('[GeminiLive] Error:', message.message);
                 stopListening({ reason: 'no_input' });
                 clearProcessingTimeout();
+                setAssistantText('');
                 setState('error');
                 setStage('idle');
+                break;
+              case 'assistant_text':
+                clearProcessingTimeout();
+                setAssistantText(message.text ?? '');
+                setStage(listening ? 'listening' : 'idle');
                 break;
               default:
                 break;
@@ -454,6 +468,8 @@ export function useGeminiLive() {
 
     setState('disconnected');
     setStage('idle');
+    setAssistantText('');
+    setTranscript('');
   }, [stopListening]);
 
   // Cleanup on unmount
@@ -467,6 +483,7 @@ export function useGeminiLive() {
     state,
     isListening,
     transcript,
+    assistantText,
     stage,
     connect,
     disconnect,

@@ -488,6 +488,44 @@ const coachContextPayload = useMemo(() => {
         exercises: [], // TODO: Extract exercise names from reps if needed
     }));
 
+    const hasAcceptedPlan = Boolean(sessionPlanState?.accepted && sessionPlanState.sets.length);
+    const totalPlanSets = hasAcceptedPlan ? sessionPlanState?.sets.length ?? 0 : 0;
+    const completedPlanSets = hasAcceptedPlan
+        ? Math.min(sessionPlanState?.nextIndex ?? 0, totalPlanSets)
+        : 0;
+    const planContext = hasAcceptedPlan && totalPlanSets > 0
+        ? {
+              intent: sessionPlanState?.plan?.plan_meta?.intent ?? null,
+              totalSets: totalPlanSets,
+              completedSets: completedPlanSets,
+              remainingSets: Math.max(0, totalPlanSets - completedPlanSets),
+              last: plannedSetCurrent
+                  ? {
+                        exercise: plannedSetCurrent.exerciseName,
+                        blockLabel: plannedSetCurrent.blockLabel,
+                        setNumber: plannedSetCurrent.setIndex + 1,
+                        totalSets: plannedSetCurrent.totalSets,
+                        reps: plannedSetCurrent.reps,
+                        tempo: plannedSetCurrent.tempo,
+                        restSeconds: plannedSetCurrent.restSeconds,
+                        loadAdjustment: plannedSetCurrent.loadAdjustment,
+                    }
+                  : null,
+              next: plannedSetNext
+                  ? {
+                        exercise: plannedSetNext.exerciseName,
+                        blockLabel: plannedSetNext.blockLabel,
+                        setNumber: plannedSetNext.setIndex + 1,
+                        totalSets: plannedSetNext.totalSets,
+                        reps: plannedSetNext.reps,
+                        tempo: plannedSetNext.tempo,
+                        restSeconds: plannedSetNext.restSeconds,
+                        loadAdjustment: plannedSetNext.loadAdjustment,
+                    }
+                  : null,
+          }
+        : null;
+
     return {
         readiness: readinessValue,
         sessionPhase: derivedCoachPhase,
@@ -505,8 +543,22 @@ const coachContextPayload = useMemo(() => {
             tired: coordinatorFatigueRef.current === 'fall',
         },
         sessionHistory,
+        plan: planContext,
     };
-}, [coachFeedback?.cta?.action, derivedCoachPhase, initialReadinessScore, lastCompletedSet, postScore, readinessScore, sessionData?.currentReadiness, sessionsHistory, weeklyTrend]);
+}, [
+    coachFeedback?.cta?.action,
+    derivedCoachPhase,
+    initialReadinessScore,
+    lastCompletedSet,
+    plannedSetCurrent,
+    plannedSetNext,
+    postScore,
+    readinessScore,
+    sessionData?.currentReadiness,
+    sessionPlanState,
+    sessionsHistory,
+    weeklyTrend,
+]);
 const coachContextKeyRef = useRef<string>('');
 
 const coachGateContext = useMemo<CoachGateContext>(() => {
@@ -573,6 +625,33 @@ const coachPromptBase = useMemo(() => {
     }
     if (coachContextPayload.userFlags?.pain) {
         parts.push('Athlete flagged pain/discomfort.');
+    }
+
+    const plan = coachContextPayload.plan;
+    if (plan?.intent) {
+        const intentLabel = plan.intent.replace(/_/g, ' ');
+        parts.push(`Session plan intent: ${intentLabel}.`);
+    }
+    if (plan?.totalSets != null && plan.totalSets > 0) {
+        const completed = plan.completedSets ?? 0;
+        parts.push(`Planned sets completed: ${completed}/${plan.totalSets}.`);
+    }
+    if (plan?.next) {
+        const details: string[] = [];
+        details.push(`${plan.next.exercise}${plan.next.setNumber ? ` (set ${plan.next.setNumber}${plan.next.totalSets ? ` of ${plan.next.totalSets}` : ''})` : ''}`);
+        if (plan.next.reps) {
+            details.push(`${plan.next.reps} reps`);
+        }
+        if (plan.next.tempo) {
+            details.push(`tempo ${plan.next.tempo}`);
+        }
+        if (typeof plan.next.restSeconds === 'number' && Number.isFinite(plan.next.restSeconds)) {
+            details.push(`rest ${Math.round(plan.next.restSeconds)}s`);
+        }
+        if (plan.next.loadAdjustment && plan.next.loadAdjustment !== 'n/a') {
+            details.push(`load ${plan.next.loadAdjustment}`);
+        }
+        parts.push(`Next planned set: ${details.join(', ')}.`);
     }
 
     // Add recent session history

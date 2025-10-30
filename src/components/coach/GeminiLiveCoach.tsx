@@ -41,6 +41,7 @@ export const GeminiLiveCoach: React.FC<GeminiLiveCoachProps> = ({ open, onClose 
     state,
     isListening,
     transcript,
+    assistantText,
     stage,
     connect,
     disconnect,
@@ -259,9 +260,18 @@ export const GeminiLiveCoach: React.FC<GeminiLiveCoachProps> = ({ open, onClose 
           <p className="mt-3 max-w-xs text-sm text-white/70">{copy.subtitle}</p>
         </div>
 
-        {transcript && (
-          <div className="max-w-xs rounded-2xl bg-white/10 px-5 py-3 text-center text-sm text-white/80" aria-live="polite">
-            “{transcript}”
+        {(transcript || assistantText) && (
+          <div className="flex flex-col items-center gap-2 text-white/80" aria-live="polite">
+            {transcript && (
+              <div className="max-w-xs rounded-2xl bg-white/10 px-5 py-3 text-center text-sm">
+                “{transcript}”
+              </div>
+            )}
+            {assistantText && (
+              <div className="max-w-xs rounded-2xl bg-white/14 px-5 py-3 text-center text-sm font-medium text-white">
+                {assistantText}
+              </div>
+            )}
           </div>
         )}
       </div>
