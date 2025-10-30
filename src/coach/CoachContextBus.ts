@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from 'react';
+import type { AppSurface, ExperienceBand } from './policy/types';
 
 export type CoachContextPhase = 'intro' | 'warmup' | 'work' | 'rest' | 'cooldown' | 'summary';
 export type CoachGoal = 'build_strength' | 'recovery';
@@ -25,6 +26,10 @@ export type CoachContext = {
     reps: number;
     rpe?: number;
     seconds?: number;
+    weight_lb?: number;
+    tempo?: string;
+    depth?: 'above' | 'parallel' | 'below';
+    bar_speed?: 'slow' | 'stable' | 'fast';
   };
   goal: CoachGoal;
   userFlags?: {
@@ -32,6 +37,16 @@ export type CoachContext = {
     pain?: boolean;
   };
   sessionHistory?: CoachSessionSummary[];
+  // New fields for state-aware coaching
+  appSurface?: AppSurface;
+  experienceBand?: ExperienceBand;
+  readinessTarget?: number;
+  requiresChange?: boolean;
+  symmetry?: {
+    left_pct: number;
+    right_pct: number;
+  };
+  timeLeftMin?: number;
 };
 
 export type CoachEventType =
