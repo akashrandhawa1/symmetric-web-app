@@ -386,61 +386,55 @@ export function createLiveCoachGateway(port: number) {
         return;
       }
 
-      // Handle JSON messages from client
-      if (typeof data === 'string' || data instanceof Buffer) {
-        let text: string | null = null;
-        if (typeof data === 'string') {
-          text = data;
-        } else {
-          let firstNonWhitespace: number | undefined;
-          for (let i = 0; i < data.length; i += 1) {
-            const byte = data[i];
-            if (byte === 9 || byte === 10 || byte === 13 || byte === 32) continue; // tab, lf, cr, space
-            firstNonWhitespace = byte;
-            break;
-          }
-          if (firstNonWhitespace === 123 || firstNonWhitespace === 91) {
-            text = data.toString('utf8');
-          }
+      const decodeIfJson = (payload: WebSocket.RawData): string | null => {
+        if (typeof payload === 'string') {
+          return payload;
         }
+        if (!(payload instanceof Buffer)) {
+          return null;
+        }
+        let firstNonWhitespace: number | undefined;
+        for (let i = 0; i < payload.length; i += 1) {
+          const byte = payload[i];
+          if (byte === 9 || byte === 10 || byte === 13 || byte === 32) continue; // whitespace
+          firstNonWhitespace = byte;
+          break;
+        }
+        if (firstNonWhitespace === 123 || firstNonWhitespace === 91) { // "{" or "["
+          return payload.toString('utf8');
+        }
+        return null;
+      };
 
-        if (text == null) {
-          // Not JSON-like, skip to audio handling
-        } else {
-          const firstChar = text.trimStart().charAt(0);
-          if (firstChar === '{' || firstChar === '[') {
-            try {
-              const message = JSON.parse(text);
-              console.log('[LiveCoach] Client message:', message.type);
+      const maybeJson = decodeIfJson(data);
+      if (maybeJson) {
+        const trimmed = maybeJson.trimStart();
+        if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+          try {
+            const message = JSON.parse(maybeJson);
+            console.log('[LiveCoach] Client message:', message.type);
 
             switch (message.type) {
               case 'context_update':
                 updateSessionContext(session, message.context, message.events);
                 primeGeminiWithContext(session);
-                break;
+                return;
               case 'ptt_start':
                 updateSessionContext(session, message.context, message.events);
                 primeGeminiWithContext(session);
                 console.log('[LiveCoach] PTT started, ready for audio');
-                break;
-
+                return;
               case 'audio_end':
-                // End of audio stream - Don't send anything to Gemini
-                // Gemini will automatically detect the end of speech and respond
                 console.log('[LiveCoach] Audio stream ended, waiting for Gemini response');
-                break;
-
+                return;
               case 'barge_in':
-                // Interrupt Gemini
                 session.geminiWs.send(JSON.stringify({
                   clientContent: {
                     turnComplete: true
                   }
                 }));
-                break;
-
+                return;
               case 'user_turn':
-                // Text-based turn
                 if (message.text) {
                   updateSessionContext(session, message.context, message.events);
                   primeGeminiWithContext(session);
@@ -458,20 +452,18 @@ export function createLiveCoachGateway(port: number) {
                     }
                   }));
                 }
+                return;
+              default:
                 break;
             }
-            return;
           } catch (err) {
-            // Not JSON, might be audio buffer
+            console.warn('[LiveCoach] Failed to parse client JSON message:', err);
           }
         }
       }
 
-      // Handle audio data from client
       if (data instanceof Buffer && data.length >= 500) {
         console.log('[LiveCoach] Sending audio chunk to Gemini, size:', data.length);
-        // Client sends PCM16 audio at 16kHz
-        // Convert to base64 and send to Gemini
         const base64Audio = data.toString('base64');
         session.geminiWs.send(JSON.stringify({
           realtimeInput: {
