@@ -58,7 +58,7 @@ const DecisionHero: React.FC<Props> = ({ est, windowLabel }) => {
         <p className="text-sm font-semibold uppercase tracking-[0.24em] text-white/60">
           Recovery Outlook
         </p>
-        <p className="text-base font-medium text-white">
+        <p className="text-base font-medium text-emerald-400">
           Next optimal: ~{est.T80h}h • Full pop: ~{est.T85h}h
         </p>
         {windowLabel && (
