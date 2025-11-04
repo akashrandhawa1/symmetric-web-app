@@ -84,7 +84,7 @@ export const HomeHero: React.FC<HomeHeroProps> = ({
 
       <p className={`text-sm md:text-base font-medium tracking-wide ${accent.labelClass}`}>{accent.label}</p>
       {normalizedSchedule && (
-        <p className="text-base md:text-lg font-semibold text-slate-100 tracking-tight">
+        <p className="text-base md:text-lg font-semibold text-emerald-400 tracking-tight">
           {normalizedSchedule}
         </p>
       )}
