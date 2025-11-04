@@ -1,5 +1,13 @@
 export type Topic =
   | "name"                                                  // rapport
+  // OPTIMIZED TOPICS (7 core questions)
+  | "primary_goal"                                          // Combines: goal_intent + goal_detail + motivation
+  | "training_context"                                      // Combines: experience + baseline_strength + form_confidence
+  | "limitations"                                           // Combines: past_injuries + mobility + soreness + constraints
+  | "sport_context"                                         // CONDITIONAL: Only if sport mentioned in primary_goal
+  | "equipment_session"                                     // Combines: equipment + session_length + environment
+  | "frequency_commitment"                                  // Combines: frequency + timeline
+  // LEGACY TOPICS (backward compatibility)
   | "goal_intent" | "motivation"                            // goal + why
   | "timeline"                                              // deadline/event
   | "sport_role" | "performance_focus"                      // sport/activity context
@@ -10,7 +18,6 @@ export type Topic =
   | "frequency" | "session_length"                          // schedule
   | "sleep_stress" | "soreness_pattern"                     // recovery
   | "preferences" | "coach_vibe"                            // preferences
-  // Legacy topics (keep for backward compatibility)
   | "goal_detail" | "age_range" | "height_cm" | "weight_kg"
   | "program_style" | "mobility_limitations" | "soreness_pain"
   | "sensor_today" | "sport_position" | "occupation_type" | "daily_activity";
