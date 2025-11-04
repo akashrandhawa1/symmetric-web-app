@@ -431,23 +431,54 @@ const normaliseBlock = (
 
 function buildPlanContext(answers: Record<string, any>, fallback: WrapTurn) {
   return {
+    // Core identity
     name: typeof answers.name === "string" ? answers.name.trim() : "",
+
+    // Goals (NEW + LEGACY support)
+    primary_goal: answers.primary_goal ?? null,
+    body_composition: answers.body_composition ?? null,
     goal_intent: answers.goal_intent ?? null,
     motivation: answers.motivation ?? null,
     timeline: answers.timeline ?? null,
-    environment: answers.environment ?? null,
-    equipment: answers.equipment ?? null,
-    experience_level: answers.experience_level ?? null,
-    confidence: answers.form_confidence ?? null,
+
+    // Current state (NEW fields)
+    training_context: answers.training_context ?? null,
+    baseline_fitness: answers.baseline_fitness ?? null,
+    age_range: answers.age_range ?? null,
+
+    // Safety & limitations
+    limitations: answers.limitations ?? null,
     constraints: answers.constraints ?? null,
     past_injuries: answers.past_injuries ?? null,
+
+    // Recovery & activity (NEW field)
+    activity_recovery: answers.activity_recovery ?? null,
+
+    // Equipment & environment
+    equipment_session: answers.equipment_session ?? null,
+    environment: answers.environment ?? null,
+    equipment: answers.equipment ?? null,
+
+    // Experience (LEGACY)
+    experience_level: answers.experience_level ?? null,
+    confidence: answers.form_confidence ?? null,
+
+    // Schedule
+    frequency_commitment: answers.frequency_commitment ?? null,
     schedule: {
       days_per_week: fallback.plan_summary.days_per_week,
       session_length_min: fallback.plan_summary.session_length_min,
       weeks: fallback.plan_summary.weeks,
     },
+
+    // Sport context (CONDITIONAL)
+    sport_context: answers.sport_context ?? null,
+
+    // Preferences
     preferences: answers.preferences ?? null,
     program_style: answers.program_style ?? null,
+
+    // Branch type
     branch: resolveIntakeBranch(undefined, answers),
   };
 }
@@ -474,10 +505,17 @@ async function generateWrapWithGemini(answers: Record<string, any>, fallback: Wr
     "- Goal must be one of the allowed enum values.",
     "- Stay upbeat, precise, and avoid marketing fluff.",
     "",
+    "KEY PERSONALIZATION FACTORS:",
+    "- Body Composition: If 'gain', emphasize volume and progressive overload. If 'lose', balance intensity with recovery. If 'maintain/recomp', focus on strength gains.",
+    "- Baseline Fitness: If user struggles with basic movements, start with foundational progressions and movement prep.",
+    "- Age Range: For 46+, emphasize recovery time, joint-friendly variations, and longer deload cycles.",
+    "- Activity & Recovery: If high stress or poor sleep (<6hrs), reduce volume by 20-30% and add extra rest.",
+    "- Limitations: Always protect flagged areas with modified ROM, exercise substitutions, or controlled tempos.",
+    "",
     "Intake answers:",
     JSON.stringify(context, null, 2),
     "",
-    "Reference plan defaults (use them unless you have a compelling reason to tweak slightly):",
+    "Reference plan defaults (use them unless you have a compelling reason to tweak based on the personalization factors above):",
     JSON.stringify(planSample, null, 2),
   ].join("\n");
 
