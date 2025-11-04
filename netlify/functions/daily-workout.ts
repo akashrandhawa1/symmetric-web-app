@@ -16,18 +16,94 @@ import { assertGenAISurface } from "../../server/guards/assertGenAISurface";
 
 const MODEL_ID = "gemini-2.0-flash";
 
-const QUAD_EXERCISES = [
-  { id: "heel_elevated_front_squat", name: "Heel-Elevated Front Squat", loadStrategy: "heavy" },
-  { id: "rear_foot_split_squat", name: "Rear-Foot Split Squat", loadStrategy: "moderate" },
-  { id: "trap_bar_deadlift_quads", name: "Trap-Bar Deadlift (Quad Bias)", loadStrategy: "heavy" },
-  { id: "smith_machine_front_squat", name: "Smith Machine Front Squat", loadStrategy: "moderate" },
-  { id: "leg_press_wide", name: "Leg Press (Wide Stance)", loadStrategy: "moderate" },
-  { id: "bulgarian_split_squat_db", name: "DB Bulgarian Split Squat", loadStrategy: "moderate" },
-  { id: "step_up_bench", name: "Bench Step-Up", loadStrategy: "light" },
-  { id: "leg_extension", name: "Leg Extension", loadStrategy: "technique" },
-  { id: "split_squat_iso", name: "Split-Squat Iso Hold", loadStrategy: "isometric" },
-  { id: "bike_flush", name: "Assault Bike Flush", loadStrategy: "aerobic_low" },
-];
+type IntakeProfilePayload = {
+  answers?: Record<string, any>;
+  planSummary?: PlanSummary | null;
+  savedAt?: number;
+};
+
+const normaliseText = (value: unknown): string => {
+  if (value == null) return "";
+  if (typeof value === "string") return value.trim();
+  return String(value).trim();
+};
+
+const summariseIntakeProfile = (intake: IntakeProfilePayload | null): string[] => {
+  if (!intake) return [];
+  const answers = intake.answers ?? {};
+  const summaryPairs: Array<[string, unknown]> = [
+    ["name", answers.name],
+    ["goal_intent", answers.goal_intent],
+    ["motivation", answers.motivation],
+    ["timeline", answers.timeline],
+    ["branch", answers.branch],
+    ["performance_focus", answers.performance_focus],
+    ["constraints", answers.constraints],
+    ["past_injuries", answers.past_injuries],
+    ["experience_level", answers.experience_level],
+    ["form_confidence", answers.form_confidence],
+    ["environment", answers.environment],
+    ["equipment", answers.equipment],
+    ["frequency", answers.frequency],
+    ["session_length", answers.session_length],
+    ["preferences", answers.preferences],
+    ["program_style", answers.program_style],
+  ];
+  const lines: string[] = [];
+  for (const [label, value] of summaryPairs) {
+    if (value == null) continue;
+    const text = normaliseText(value);
+    if (!text) continue;
+    lines.push(`${label}: ${text}`);
+  }
+  if (intake.planSummary) {
+    lines.push(`plan_summary: ${JSON.stringify(intake.planSummary)}`);
+  }
+  return lines;
+};
+
+const buildIntakeHighlights = (intake: IntakeProfilePayload | null) => {
+  const answers = intake?.answers ?? {};
+  const summary = intake?.planSummary ?? null;
+
+  const goalRaw = normaliseText(summary?.goal ?? answers.goal_intent ?? answers.goal ?? "general strength");
+  const motivationRaw = normaliseText(answers.motivation ?? "");
+  const environmentRaw = normaliseText(answers.environment ?? "");
+  const equipmentRaw = answers.equipment;
+  const equipmentList = Array.isArray(equipmentRaw)
+    ? equipmentRaw.map(normaliseText).filter(Boolean)
+    : normaliseText(equipmentRaw ?? "")
+        .split(/[,/]|\band\b|\bwith\b/)
+        .map((part) => part.trim())
+        .filter(Boolean);
+  const equipmentLine = equipmentList.length ? equipmentList.join(", ") : normaliseText(answers.equipment ?? "bodyweight");
+
+  const daysPerWeek = summary?.days_per_week ?? Number.parseInt(normaliseText(answers.frequency ?? ""), 10);
+  const sessionLengthMin = summary?.session_length_min ?? Number.parseInt(normaliseText(answers.session_length ?? ""), 10);
+  const scheduleLine = [
+    Number.isFinite(daysPerWeek) && daysPerWeek ? `${daysPerWeek} sessions/week` : null,
+    Number.isFinite(sessionLengthMin) && sessionLengthMin ? `${sessionLengthMin} min each` : null,
+  ]
+    .filter(Boolean)
+    .join(", ");
+
+  const constraintsRaw = normaliseText(answers.constraints ?? summary?.constraints_notes ?? "none");
+  const preferencesRaw = normaliseText(answers.preferences ?? "");
+  const focusRaw = normaliseText(answers.performance_focus ?? "");
+  const styleRaw = normaliseText(answers.program_style ?? "");
+
+  return [
+    goalRaw ? `Goal focus: ${goalRaw}.` : null,
+    motivationRaw ? `Motivation: ${motivationRaw}.` : null,
+    environmentRaw ? `Primary environment: ${environmentRaw}.` : null,
+    equipmentLine ? `Equipment available: ${equipmentLine}.` : null,
+    scheduleLine ? `Schedule cadence: ${scheduleLine}.` : null,
+    constraintsRaw && constraintsRaw.toLowerCase() !== "none" ? `Protect constraints/injuries: ${constraintsRaw}.` : null,
+    preferencesRaw ? `Preferences: ${preferencesRaw}.` : null,
+    focusRaw ? `Performance focus: ${focusRaw}.` : null,
+    styleRaw ? `Program style preference: ${styleRaw}.` : null,
+  ].filter((line): line is string => Boolean(line && line.length));
+};
 
 type DailyWorkoutPayload = {
   context: {
@@ -46,6 +122,7 @@ type DailyWorkoutPayload = {
     est1RMKg?: number | null;
   };
   varietyToken: number;
+  intakeProfile?: IntakeProfilePayload | null;
 };
 
 const handler: Handler = async (event) => {
@@ -112,45 +189,62 @@ const handler: Handler = async (event) => {
     est1RMKg,
   } = payload.context;
 
-  const exerciseCatalog = QUAD_EXERCISES.map(
-    (item) => `- ${item.id} → ${item.name} (${item.loadStrategy})`
-  ).join("\n");
+  const intakeProfile = payload.intakeProfile ?? null;
+  const intakeSummaryLines = summariseIntakeProfile(intakeProfile);
+  const intakeHighlights = buildIntakeHighlights(intakeProfile);
 
-  const prompt = [
-    "You are Symmetric’s Quad Strength Planner—engineer a quad-focused session that finishes readiness at 50.",
+  const promptLines = [
+    "You are Symmetric’s adaptive lower-body planner—engineer a session that lands near readiness 50 while reflecting the athlete’s intake profile.",
     "Return ONLY JSON matching the schema. No commentary, markdown, or stray text.",
     "",
-    "SESSION RULES:",
-    "- Use exercises from the allowed quad list below (swap only for mechanically equivalent quad options).",
-    "- Emit 3–4 blocks total: 1 main lift, 1–2 accessory strength blocks, and 1 recovery/flush block.",
-    "- Provide realistic sets/reps/tempo/rest and set loadStrategy to one of heavy/moderate/light/technique/isometric/aerobic_low.",
-    "- Include readiness_after for each block (projected readiness after that block).",
-    "- If starting readiness ≥ 51: keep readiness_after strictly descending toward 50 (never below 49 for strength prescriptions).",
-    "- If starting readiness < 51 OR CTA indicates recovery: set mode='readiness_training', keep readiness_after ≥ readiness_before - 1 (preferably +1 to +3), and favour technique/isometric/aerobic prescriptions.",
-    "- Populate notes with concise execution cues (≤120 chars).",
-    "- plan_meta.readiness must equal the starting readiness; plan.projected.readinessAfter must equal 50.",
-    "- Secondary rationale belongs in policy.rationale and block.evidence.rationale; no marketing fluff.",
+    "Intake highlights:",
+    ...(intakeHighlights.length
+      ? intakeHighlights
+      : ["Goal focus: general strength.", "Equipment available: standard lower-body setup."]),
     "",
-    `Allowed quad exercises (id → name):\n${exerciseCatalog}`,
+    "Today’s readiness data:",
+    `- readiness_start: ${readiness ?? "unknown"}`,
+    `- target_final_readiness: ${readiness != null && readiness < 51 ? Math.round(readiness) : 52}`,
+    `- metrics: rmsDropPct=${metrics.rmsDropPct}, ror=${metrics.ror}, symmetryPct=${metrics.symmetryPct}`,
+    `- cta_action: ${ctaAction}`,
+    `- recovery_window_hours: ${recoveryHours ?? "null"}`,
+    `- minutes_since_last_session: ${minutesSinceLastSession ?? "null"}`,
+    `- just_finished_session: ${justFinished}`,
+    `- labels: ${JSON.stringify(labels ?? {})}`,
+    `- history: ${JSON.stringify(history ?? {})}`,
+    `- constraints_flags: ${JSON.stringify(constraints ?? {})}`,
+    `- preferred_exercise_id: ${exerciseId ?? ""}`,
+    `- reference_load: ${weightKg ?? "null"}`,
+    `- reference_est1RM: ${est1RMKg ?? "null"}`,
+    `- variety_token: ${payload.varietyToken}`,
     "",
-    `Starting readiness: ${readiness ?? "unknown"}`,
-    `Target final readiness: ${readiness != null && readiness < 51 ? Math.round(readiness) : 50}`,
-    `Metrics: rmsDropPct=${metrics.rmsDropPct}, ror="${metrics.ror}", symmetryPct=${metrics.symmetryPct}`,
-    `CTA action: ${ctaAction}`,
-    `Recovery window hours: ${recoveryHours ?? "null"}`,
-    `Minutes since last session: ${minutesSinceLastSession ?? "null"}`,
-    `Just finished session: ${justFinished}`,
-    `First name: ${firstName ?? "null"}`,
-    `Labels: ${JSON.stringify(labels ?? {})}`,
-    `History: ${JSON.stringify(history ?? {})}`,
-    `Constraints: ${JSON.stringify(constraints ?? {})}`,
-    `Requested exerciseId: ${exerciseId ?? ""}`,
-    `WeightKg: ${weightKg ?? "null"}`,
-    `Estimated 1RM: ${est1RMKg ?? "null"}`,
-    `Variety token: ${payload.varietyToken}`,
+    "Reason through the plan before responding:",
+    "- First, list the key requirements in your head (goal, constraints, equipment, readiness target).",
+    "- If any requirement conflicts, resolve it before producing the JSON output.",
+    "- Do not include your scratchpad in the response—return ONLY the JSON plan.",
+    "",
+    "Session design guidelines:",
+    "- Choose movements that advance the intake goal using the available equipment.",
+    "- Emphasise lower-body patterns (squat/hinge/lunge/brace) and note how each block honours constraints or preferences.",
+    "- Produce 3–4 blocks: 1 primary lift, 1–2 accessories, optional finisher or recovery block.",
+    "- Provide realistic sets/reps/tempo/rest; set loadStrategy to heavy/moderate/light/isometric/aerobic_low/technique.",
+    "- readiness_after must chain cleanly and finish between 50-55 when mode='strength'.",
+    "- If readiness < 49 or constraints demand recovery, set mode='readiness_training' and keep total block cost ≤ 1.",
+    "- Tailor notes to explain intent, constraints, or adherence cues in ≤120 characters.",
+    "",
+    "Volume + projection rules:",
+    "- Use the cost model (heavy 2.5, moderate 1.6, light 1.0, isometric 0.6, technique 0.3, aerobic_low 0.8) × reps multiplier × RMS multiplier to derive block_cost.",
+    "- Maintain accurate readiness_before/after sequencing across blocks.",
+    "- If mode='strength' and readiness_after > 55 add work; if < 50 reduce volume.",
     "",
     "JSON schema (no extra fields):",
-  ].join("\n");
+  ];
+
+  if (intakeSummaryLines.length) {
+    promptLines.push("", "Raw intake summary:", ...intakeSummaryLines, "");
+  }
+
+  const prompt = promptLines.join("\n");
 
   const schema = {
     type: Type.OBJECT,

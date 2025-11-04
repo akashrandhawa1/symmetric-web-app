@@ -6,15 +6,15 @@ describe("pickCoachModel", () => {
     expect(pickCoachModel({ mode: "liveSet" })).toBe("gemini-2.0-flash-live");
   });
 
-  it("chooses pro for heavy tasks", () => {
-    expect(pickCoachModel({ mode: "home", heavy: true })).toBe("gemini-2.5-pro");
+  it("chooses flash for heavy tasks", () => {
+    expect(pickCoachModel({ mode: "home", heavy: true })).toBe("gemini-2.5-flash");
   });
 
-  it("defaults to 2.5-flash", () => {
-    expect(pickCoachModel({ mode: "home" })).toBe("gemini-2.5-flash");
+  it("defaults to 2.0-flash", () => {
+    expect(pickCoachModel({ mode: "home" })).toBe("gemini-2.0-flash");
   });
 
   it("has sensible fallbacks", () => {
-    expect(FALLBACK["gemini-2.5-flash"]).toBe("gemini-2.0-flash-lite");
+    expect(FALLBACK["gemini-2.0-flash"]).toBe("gemini-2.0-flash-lite");
   });
 });

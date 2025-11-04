@@ -245,7 +245,7 @@ export async function fetchExerciseRecommendation(
     }
 
     const response = await client.models.generateContent({
-      model: 'gemini-2.5-flash-lite',
+      model: 'gemini-2.0-flash',
       contents: [
         {
           role: 'user',

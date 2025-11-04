@@ -1,5 +1,6 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { CoachContextBus } from '../coach/CoachContextBus';
+import { coachState } from '../components/coach/coachPhase';
 import type { CoachContext, CoachEvent } from '../coach/CoachContextBus';
 
 const resolveWsUrl = (): string => {
@@ -32,10 +33,66 @@ type PromptPayload = {
   events: CoachEvent[];
 };
 
+const calculateReadinessTrend = (events: CoachEvent[]): 'dropping_fast' | 'stable' | 'recovering' | 'unknown' => {
+  const readinessEvents = events.filter(e => e.type === 'readiness_updated');
+  if (readinessEvents.length < 2) return 'unknown';
+
+  const values = readinessEvents.map(e => (e.payload?.readiness as number) || 0);
+  const recent = values.slice(-3);
+  const avg = recent.reduce((a, b) => a + b, 0) / recent.length;
+  const first = recent[0];
+  const last = recent[recent.length - 1];
+
+  const drop = first - last;
+  if (drop > 15) return 'dropping_fast';
+  if (drop > 5) return 'stable';
+  if (drop < -5) return 'recovering';
+  return 'stable';
+};
+
 const buildPromptPayload = (): PromptPayload => {
   const ctx = CoachContextBus.getSnapshot();
   const events = CoachContextBus.getEvents().slice(-5);
-  return { ctx, events };
+
+  // Add intelligent context summarization
+  const summary = {
+    // Session state
+    phase: ctx.sessionPhase,
+    timeLeftMin: ctx.timeLeftMin || null,
+
+    // Current work
+    currentExercise: ctx.plan?.next?.exercise || ctx.lastSet?.exercise || null,
+    setProgress: ctx.plan
+      ? `${ctx.plan.completedSets || 0}/${ctx.plan.totalSets || 0}`
+      : null,
+
+    // Performance trends
+    readinessTrend: calculateReadinessTrend(events),
+    readinessCurrent: ctx.readiness,
+    readinessTarget: ctx.readinessTarget || null,
+    recentRPE: ctx.lastSet?.rpe || null,
+
+    // Flags requiring intervention
+    needsIntervention: Boolean(
+      ctx.requiresChange ||
+      ctx.userFlags?.pain ||
+      ctx.userFlags?.tired
+    ),
+    painFlag: ctx.userFlags?.pain || false,
+    tiredFlag: ctx.userFlags?.tired || false,
+
+    // Equipment & constraints context
+    appSurface: ctx.appSurface || 'unknown',
+    experienceBand: ctx.experienceBand || 'intermediate',
+  };
+
+  // Merge summary into context
+  const enrichedCtx = {
+    ...ctx,
+    summary,
+  };
+
+  return { ctx: enrichedCtx, events };
 };
 
 export function useGeminiLive() {
@@ -59,12 +116,16 @@ export function useGeminiLive() {
   const listenStartRef = useRef<number | null>(null);
   const speechDetectedRef = useRef(false);
   const isListeningRef = useRef(false);
+  const responseTimesRef = useRef<number[]>([]);
+  const requestStartTimeRef = useRef<number | null>(null);
+  const retryCountRef = useRef(0);
 
   const SILENCE_THRESHOLD = 0.008;
   const SILENCE_FRAMES_REQUIRED = 5;
-  const NO_INPUT_TIMEOUT_MS = 5000; // 5 seconds to start speaking (was 1.8s - too short!)
-  const MAX_LISTEN_DURATION_MS = 20000; // 20 seconds max listen duration (was 15s)
-  const PROCESSING_TIMEOUT_MS = 12000; // 12 seconds max processing time (was 8s)
+  const NO_INPUT_TIMEOUT_MS = 5000; // 5 seconds to start speaking
+  const MAX_LISTEN_DURATION_MS = 20000; // 20 seconds max listen duration
+  const BASE_PROCESSING_TIMEOUT_MS = 12000; // Base processing timeout
+  const MAX_RETRIES = 2;
 
   type StopReason = 'manual' | 'silence' | 'timeout' | 'no_input';
 
@@ -77,12 +138,29 @@ export function useGeminiLive() {
 
   const armProcessingTimeout = useCallback(() => {
     clearProcessingTimeout();
+
+    // Calculate adaptive timeout based on historical response times
+    let adaptiveTimeout = BASE_PROCESSING_TIMEOUT_MS;
+
+    if (responseTimesRef.current.length > 0) {
+      const avgResponseTime =
+        responseTimesRef.current.reduce((a, b) => a + b, 0) / responseTimesRef.current.length;
+
+      // Use 2.5x average response time, with min 5s and max 20s
+      adaptiveTimeout = Math.min(
+        Math.max(avgResponseTime * 2.5, 5000),
+        20000
+      );
+    }
+
+    console.log('[GeminiLive] Setting processing timeout:', adaptiveTimeout, 'ms');
+
     processingTimeoutRef.current = window.setTimeout(() => {
       console.log('[GeminiLive] Processing timeout - no response from Gemini');
+      setAssistantText('Coach took too long to respond. Tap to try again.');
       setStage('idle');
-      setTranscript('');
-    }, PROCESSING_TIMEOUT_MS);
-  }, [PROCESSING_TIMEOUT_MS, clearProcessingTimeout]);
+    }, adaptiveTimeout);
+  }, [BASE_PROCESSING_TIMEOUT_MS, clearProcessingTimeout]);
 
   // Play audio from Gemini response
   const playAudioBuffer = async (arrayBuffer: ArrayBuffer) => {
@@ -189,6 +267,7 @@ export function useGeminiLive() {
       micStreamRef.current = stream;
 
       const promptPayload = buildPromptPayload();
+      requestStartTimeRef.current = Date.now();
       wsRef.current.send(JSON.stringify({
         type: 'ptt_start',
         context: promptPayload.ctx,
@@ -365,6 +444,7 @@ export function useGeminiLive() {
                 clearProcessingTimeout();
                 setAssistantText('');
                 setStage(listening ? 'listening' : 'idle');
+                retryCountRef.current = 0; // Reset retry count on successful connection
                 break;
               case 'final_stt':
                 setTranscript(message.text ?? '');
@@ -372,6 +452,17 @@ export function useGeminiLive() {
                 armProcessingTimeout();
                 break;
               case 'assistant_audio_end':
+                // Track response time for adaptive timeout
+                if (requestStartTimeRef.current) {
+                  const responseTime = Date.now() - requestStartTimeRef.current;
+                  responseTimesRef.current.push(responseTime);
+                  // Keep only last 10 response times
+                  if (responseTimesRef.current.length > 10) {
+                    responseTimesRef.current.shift();
+                  }
+                  console.log('[GeminiLive] Response time:', responseTime, 'ms');
+                  requestStartTimeRef.current = null;
+                }
                 clearProcessingTimeout();
                 setAssistantText('');
                 setStage(listening ? 'listening' : 'idle');
@@ -385,6 +476,7 @@ export function useGeminiLive() {
                 setStage('idle');
                 break;
               case 'assistant_text':
+                if (coachState.phase !== 'live') break;
                 clearProcessingTimeout();
                 setAssistantText(message.text ?? '');
                 setStage(listening ? 'listening' : 'idle');
@@ -418,8 +510,24 @@ export function useGeminiLive() {
       ws.onerror = (error) => {
         console.error('[GeminiLive] WebSocket error:', error);
         stopListening({ reason: 'no_input' });
-        setState('error');
-        setStage('idle');
+
+        // Retry logic for transient failures
+        if (retryCountRef.current < MAX_RETRIES) {
+          retryCountRef.current++;
+          const retryDelay = 1000 * retryCountRef.current;
+          console.log(`[GeminiLive] Retrying connection (${retryCountRef.current}/${MAX_RETRIES}) in ${retryDelay}ms`);
+
+          setState('connecting');
+          setTimeout(() => {
+            console.log('[GeminiLive] Attempting reconnect...');
+            connect();
+          }, retryDelay);
+        } else {
+          console.error('[GeminiLive] Max retries reached');
+          setState('error');
+          setStage('idle');
+          retryCountRef.current = 0;
+        }
       };
 
       ws.onclose = () => {

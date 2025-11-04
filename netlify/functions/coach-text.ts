@@ -1,8 +1,9 @@
 import type { Handler } from '@netlify/functions';
-import { COACH_SYSTEM, COACH_SAFE_FALLBACK } from '../../src/lib/coach/constants';
+import { COACH_SAFE_FALLBACK } from '../../src/lib/coach/constants';
 import { containsVocalDrift } from '../../src/lib/coach/buildCoachPrompt';
+import { buildCoachSystemPrompt, looksLikePrescription, type CoachPhase } from '../../src/lib/coach/systemPrompt';
 
-const MODEL_ID = process.env.GEMINI_MODEL_ID || 'gemini-2.5-flash-lite';
+const MODEL_ID = process.env.GEMINI_MODEL_ID || 'gemini-2.0-flash';
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 
 const FALLBACK_MESSAGE = COACH_SAFE_FALLBACK;
@@ -28,6 +29,7 @@ type CoachTextRequest = {
   scope?: string;
   speaker_style?: string;
   persona_tone?: string;
+  phase?: CoachPhase;
 };
 
 async function callGemini(system: string, input: string) {
@@ -36,7 +38,7 @@ async function callGemini(system: string, input: string) {
   }
 
   const response = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(MODEL_ID)}:generateContent?key=${GEMINI_API_KEY}`,
+    `https://generativelanguage.googleapis.com/v1/models/${encodeURIComponent(MODEL_ID)}:generateContent?key=${GEMINI_API_KEY}`,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -90,13 +92,20 @@ export const handler: Handler = async (event) => {
       return makeErrorResponse(400, 'Missing input');
     }
 
-    const system = typeof payload.system === 'string' && payload.system.trim()
-      ? payload.system
-      : COACH_SYSTEM;
+    const phase: CoachPhase = payload.phase === 'intake' || payload.phase === 'preview' ? payload.phase : 'live';
+    const system = buildCoachSystemPrompt(phase);
 
     let reply = await callGemini(system, rawInput);
     if (!reply) {
       reply = FALLBACK_MESSAGE;
+    }
+
+    if (phase === 'intake' || phase === 'preview') {
+      let safe = reply.trim();
+      if (!safe || looksLikePrescription(safe)) {
+        safe = "Got it. Quick one: what’s your main focus—strength, muscle, general, or rehab?";
+      }
+      return makeResponse(200, JSON.stringify({ text: safe, phase }));
     }
 
     if (containsVocalDrift(reply)) {
@@ -109,7 +118,7 @@ export const handler: Handler = async (event) => {
       }
     }
 
-    return makeResponse(200, JSON.stringify({ text: reply.trim() }));
+    return makeResponse(200, JSON.stringify({ text: reply.trim(), phase }));
   } catch (error: any) {
     console.error('[coach-text] error', error);
     return makeErrorResponse(500, error?.message ?? 'SERVER_ERROR');

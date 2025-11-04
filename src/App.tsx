@@ -45,6 +45,7 @@ import { fallbackNarration } from './coach/narrator';
 import { buildCoachUserPrompt, containsVocalDrift } from './lib/coach/buildCoachPrompt';
 import { sendCoachText } from './lib/coach/sendCoachText';
 import { COACH_PERSONA } from './lib/coach/constants';
+import { applyLiveSCC, type LiveContext, type LiveEvent, type PlanAdjustment } from './components/coach/miloLiveSCC';
 
 const stripFormatting = (value: string) => value.replace(/\*\*/g, '').trim();
 const normaliseLine = (value: string) => stripFormatting(value).replace(/’/g, "'").toLowerCase();
@@ -275,6 +276,10 @@ useEffect(() => {
         sessionPlanAbortRef.current?.abort();
     };
 }, []);
+const latestSymmetryRef = useRef<number | undefined>(undefined);
+const previousSensorOnRef = useRef<boolean | null>(null);
+const readinessLowTriggeredRef = useRef(false);
+const timeShortTriggerRef = useRef<number | null>(null);
     const planSummaryForCoach = useMemo<CoachPromptContextInput['currentPlan']>(() => {
         if (!latestWorkoutPlan) return null;
         try {
@@ -739,6 +744,217 @@ useEffect(() => {
     CoachContextBus.publishContext(coachContextPayload);
 }, [coachContextPayload]);
 
+const pushLiveCoachMessage = useCallback(
+    (text: string) => {
+        const trimmed = text.trim();
+        if (!trimmed) return;
+        const coachResponse: ChatMessage = {
+            id: Date.now() + Math.random(),
+            sender: 'coach',
+            text: trimmed,
+        };
+        chatHistoryForAPI.current.push(coachResponse);
+        setChatMessages((prev) => [...prev, coachResponse]);
+    },
+    [],
+);
+
+const applyLivePlanAdjustment = useCallback(
+    (adjustment?: PlanAdjustment) => {
+        if (!adjustment) return;
+
+        const applyRest = (seconds: number) => {
+            setSessionData((prev) =>
+                prev
+                    ? {
+                          ...prev,
+                          nextSetRestSeconds: seconds,
+                          restAdjustmentSeconds:
+                              (prev.restAdjustmentSeconds ?? 0) +
+                              (seconds - (prev.nextSetRestSeconds ?? seconds)),
+                          nextSetRestMessage: `Rest ${seconds}s`,
+                      }
+                    : prev,
+            );
+            setSessionPlanState((prev) => {
+                if (!prev) return prev;
+                const sets = prev.sets.map((set, index) =>
+                    index >= prev.nextIndex ? { ...set, restSeconds: seconds } : set,
+                );
+                return { ...prev, sets };
+            });
+        };
+
+        if (adjustment.shorterRest?.toSeconds) applyRest(adjustment.shorterRest.toSeconds);
+        if (adjustment.longerRest?.toSeconds) applyRest(adjustment.longerRest.toSeconds);
+
+        const applyIntensityDelta = (delta: number, label: string) => {
+            if (delta === 0) return;
+            setSessionData((prev) =>
+                prev
+                    ? {
+                          ...prev,
+                          nextSetWeightAdjustment: (prev.nextSetWeightAdjustment ?? 0) + delta,
+                          weightAdjustmentMessage: label,
+                      }
+                    : prev,
+            );
+        };
+
+        if (adjustment.increaseIntensity) {
+            const percentDelta = (adjustment.increaseIntensity.byPercent ?? 0) / 100;
+            const rpeDelta = (adjustment.increaseIntensity.byRPE ?? 0) * 0.05;
+            const delta = percentDelta + rpeDelta;
+            if (delta !== 0) {
+                applyIntensityDelta(delta, delta > 0 ? 'Coach Milo: push a touch heavier.' : 'Coach Milo: adjust intensity.');
+            }
+        }
+
+        if (adjustment.reduceIntensity) {
+            const percentDelta = (adjustment.reduceIntensity.byPercent ?? 0) / 100;
+            const rpeDelta = (adjustment.reduceIntensity.byRPE ?? 0) * 0.05;
+            const delta = percentDelta + rpeDelta;
+            if (delta !== 0) {
+                applyIntensityDelta(-delta, 'Coach Milo: ease intensity slightly.');
+            }
+        }
+
+        const addSyntheticSet = (name: string, details?: string) => {
+            setSessionPlanState((prev) => {
+                if (!prev) return prev;
+                const id = `live-${Date.now()}-${Math.round(Math.random() * 1e6)}`;
+                const sets: PlannedWorkoutSet[] = [
+                    ...prev.sets,
+                    {
+                        id,
+                        exerciseName: name,
+                        blockLabel: 'Live Adjust',
+                        blockIndex: prev.sets.length,
+                        setIndex: prev.sets.length,
+                        totalSets: 1,
+                        reps: details ?? null,
+                        tempo: null,
+                        restSeconds: null,
+                        loadAdjustment: 'n/a',
+                    },
+                ];
+                return { ...prev, sets };
+            });
+        };
+
+        if (adjustment.addBlock) {
+            addSyntheticSet(adjustment.addBlock.name, adjustment.addBlock.details);
+        }
+
+        if (adjustment.densityFinisher) {
+            addSyntheticSet(
+                adjustment.densityFinisher.name,
+                adjustment.densityFinisher.note ?? `${adjustment.densityFinisher.durationMin} min finisher`,
+            );
+        }
+
+        if (adjustment.recoveryInsert) {
+            addSyntheticSet(
+                adjustment.recoveryInsert.name,
+                adjustment.recoveryInsert.note ?? `${adjustment.recoveryInsert.durationMin} min recovery`,
+            );
+        }
+
+        if (adjustment.swapExercise) {
+            setSessionPlanState((prev) => {
+                if (!prev) return prev;
+                const from = adjustment.swapExercise.from?.toLowerCase?.() ?? '';
+                if (!from) return prev;
+                const sets = prev.sets.map((set, index) => {
+                    if (index < prev.nextIndex) return set;
+                    if ((set.exerciseName ?? '').toLowerCase().includes(from)) {
+                        return { ...set, exerciseName: adjustment.swapExercise.to };
+                    }
+                    return set;
+                });
+                return { ...prev, sets };
+            });
+        }
+
+        if (adjustment.cutAccessories) {
+            setSessionPlanState((prev) => {
+                if (!prev) return prev;
+                const sets = prev.sets.filter((set, index) => {
+                    if (index < prev.nextIndex) return true;
+                    const label = set.blockLabel?.toLowerCase() ?? '';
+                    return !label.includes('access');
+                });
+                return { ...prev, sets };
+            });
+        }
+    },
+    [setSessionData, setSessionPlanState],
+);
+
+const buildLiveContext = useCallback((): LiveContext => {
+    const persona = userCoachProfileRef.current?.preferredPersona ?? 'calm';
+    const vibe: LiveContext['vibe'] =
+        persona === 'direct' ? 'expert' : persona === 'calm' ? 'calm' : 'hype';
+
+    const goalMap: Record<string, LiveContext['goal']> = {
+        lower_body_strength: 'lower_body_strength',
+        build_muscle: 'build_muscle',
+        build_strength: 'lower_body_strength',
+        recovery: 'rehab',
+        general_fitness: 'general_fitness',
+    };
+    const mappedGoal: LiveContext['goal'] =
+        goalMap[coachContextPayload.goal ?? ''] ?? 'general_fitness';
+
+    const totalSets =
+        coachContextPayload.plan?.totalSets ?? sessionPlanState?.sets.length ?? undefined;
+    const remainingSets =
+        coachContextPayload.plan?.remainingSets ??
+        (sessionPlanState ? Math.max(sessionPlanState.sets.length - sessionPlanState.nextIndex, 0) : undefined);
+    const sessionMinutes = totalSets != null ? totalSets * 6 : undefined;
+    const minutesLeft = remainingSets != null ? Math.max(0, remainingSets * 6) : undefined;
+    const daysPerWeek =
+        coachContextPayload.plan?.totalSets != null
+            ? Math.min(4, Math.max(1, Math.round((coachContextPayload.plan.totalSets ?? 6) / 3)))
+            : undefined;
+    const sensorConnected =
+        sensorStatus.left.status === 'connected' || sensorStatus.right.status === 'connected';
+    const readinessPct = Number.isFinite(sessionData?.currentReadiness)
+        ? Number(sessionData?.currentReadiness)
+        : undefined;
+    const fatiguePct = Number.isFinite(sessionData?.totalReadinessDrop)
+        ? Math.max(0, Math.min(100, Math.round(Number(sessionData?.totalReadinessDrop))))
+        : undefined;
+
+    return {
+        readinessPct,
+        fatiguePct,
+        symmetryPct: latestSymmetryRef.current,
+        vibe,
+        goal: mappedGoal,
+        experience: 'intermediate',
+        sessionMinutes,
+        minutesLeft,
+        daysPerWeek,
+        sensorOn: sensorConnected,
+    };
+}, [coachContextPayload.goal, coachContextPayload.plan, sensorStatus, sessionData, sessionPlanState]);
+
+const handleLiveEvent = useCallback(
+    (event: LiveEvent) => {
+        if (appState.screen !== 'training') return;
+        const ctx = buildLiveContext();
+        const decision = applyLiveSCC(ctx, event);
+        if (decision.message) {
+            pushLiveCoachMessage(decision.message);
+        }
+        if (decision.adjustment) {
+            applyLivePlanAdjustment(decision.adjustment);
+        }
+    },
+    [appState.screen, applyLivePlanAdjustment, buildLiveContext, pushLiveCoachMessage],
+);
+
     useEffect(() => {
         if (lastCoachPhaseRef.current !== derivedCoachPhase) {
             CoachContextBus.publish({
@@ -833,18 +1049,71 @@ useEffect(() => {
         }
     }, []);
 
-    useEffect(() => {
-        if (typeof window === 'undefined') return;
-        try {
-            if (userProfile) {
-                window.localStorage.setItem(USER_PROFILE_STORAGE_KEY, JSON.stringify(userProfile));
-            } else {
-                window.localStorage.removeItem(USER_PROFILE_STORAGE_KEY);
-            }
-        } catch (error) {
-            console.warn('[profile] failed to persist profile', error);
+useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
+        if (userProfile) {
+            window.localStorage.setItem(USER_PROFILE_STORAGE_KEY, JSON.stringify(userProfile));
+        } else {
+            window.localStorage.removeItem(USER_PROFILE_STORAGE_KEY);
         }
-    }, [userProfile]);
+    } catch (error) {
+        console.warn('[profile] failed to persist profile', error);
+    }
+}, [userProfile]);
+
+useEffect(() => {
+    const connected =
+        sensorStatus.left.status === 'connected' || sensorStatus.right.status === 'connected';
+    if (appState.screen !== 'training') {
+        previousSensorOnRef.current = connected;
+        return;
+    }
+    if (previousSensorOnRef.current === null) {
+        previousSensorOnRef.current = connected;
+        return;
+    }
+    if (previousSensorOnRef.current !== connected) {
+        previousSensorOnRef.current = connected;
+        handleLiveEvent({ type: 'SENSOR_TOGGLED', payload: { on: connected } });
+    }
+}, [sensorStatus, appState.screen, handleLiveEvent]);
+
+useEffect(() => {
+    if (appState.screen !== 'training') {
+        readinessLowTriggeredRef.current = false;
+        return;
+    }
+    const readiness = sessionData?.currentReadiness;
+    if (typeof readiness === 'number') {
+        if (readiness < 60 && !readinessLowTriggeredRef.current) {
+            readinessLowTriggeredRef.current = true;
+            handleLiveEvent({ type: 'READINESS_LOW', payload: { readinessPct: Math.round(readiness) } });
+        } else if (readiness > 64) {
+            readinessLowTriggeredRef.current = false;
+        }
+    }
+}, [appState.screen, sessionData?.currentReadiness, handleLiveEvent]);
+
+useEffect(() => {
+    if (appState.screen !== 'training') {
+        timeShortTriggerRef.current = null;
+        return;
+    }
+    const remainingSets =
+        coachContextPayload.plan?.remainingSets ??
+        (sessionPlanState ? Math.max(sessionPlanState.sets.length - sessionPlanState.nextIndex, 0) : null);
+    if (remainingSets == null) return;
+    const minutesLeft = Math.max(0, remainingSets * 6);
+    if (minutesLeft <= 8 && remainingSets > 0) {
+        if (timeShortTriggerRef.current !== remainingSets) {
+            timeShortTriggerRef.current = remainingSets;
+            handleLiveEvent({ type: 'TIME_LEFT_SHORT', payload: { minutesLeft } });
+        }
+    } else if (minutesLeft > 8) {
+        timeShortTriggerRef.current = null;
+    }
+}, [appState.screen, coachContextPayload.plan?.remainingSets, sessionPlanState, handleLiveEvent]);
 
     const applyPlanToPrediction = useCallback((prediction: ReadinessPrediction | null, plan: NextSetPlan): ReadinessPrediction | null => {
         if (!prediction) return prediction;
@@ -1002,13 +1271,14 @@ useEffect(() => {
     const fatigueFallDismissedRef = useRef(false);
     const [fatigueFallDismissed, setFatigueFallDismissed] = useState(false);
     const fatigueConfidenceRef = useRef(0);
+    const fatigueStateRef = useRef<FatigueState>('plateau');
     const maybeGenerateInsightRef = useRef<(reason: 'state' | 'checkpoint' | 'prefailure', state?: FatigueState, confidence?: number) => void>(() => {});
 
-    const handleFatigueStateEvent = useCallback(
-        (event: FatigueStateEvent) => {
-            if (!fatigueEnabled) return;
-            coordinatorFatigueRef.current = event.state;
-            logAnalyticsEvent('fatigue.state_change', {
+const handleFatigueStateEvent = useCallback(
+    (event: FatigueStateEvent) => {
+        if (!fatigueEnabled) return;
+        coordinatorFatigueRef.current = event.state;
+        logAnalyticsEvent('fatigue.state_change', {
                 from: event.previousState,
                 to: event.state,
                 confidence: event.confidence,
@@ -1033,8 +1303,14 @@ useEffect(() => {
             }
 
             maybeGenerateInsightRef.current('state', event.state, event.confidence);
+            if (event.state === 'fall') {
+                handleLiveEvent({
+                    type: 'FATIGUE_SPIKE',
+                    payload: { fatiguePct: Math.round((sessionData?.totalReadinessDrop ?? 0) * 100) / 100 },
+                });
+            }
         },
-        [fatigueEnabled, logAnalyticsEvent, fatigueFallDismissed],
+        [fatigueEnabled, logAnalyticsEvent, fatigueFallDismissed, handleLiveEvent, sessionData],
     );
 
     const {
@@ -1053,6 +1329,7 @@ useEffect(() => {
     useEffect(() => {
         if (!fatigueEnabled) return;
         coordinatorFatigueRef.current = fatigueState;
+        fatigueStateRef.current = fatigueState;
         if (fatigueState !== 'fall' && fatigueFallDismissed) {
             fatigueFallDismissedRef.current = false;
             setFatigueFallDismissed(false);
@@ -2520,6 +2797,7 @@ useEffect(() => {
                 symmetryPct = Math.max(0, Math.min(100, Math.round((1 - diffRatio) * 100)));
             }
         }
+        latestSymmetryRef.current = typeof symmetryPct === 'number' ? symmetryPct : undefined;
         const targetRestSec = Number.isFinite(previousSessionData?.nextSetRestSeconds)
             ? previousSessionData?.nextSetRestSeconds ?? undefined
             : undefined;
@@ -2588,6 +2866,16 @@ useEffect(() => {
         setSessionPhase('set-summary');
         setDismissedSuggestionKeys(prev => options.suggestionKey ? prev.filter(key => key !== options.suggestionKey) : prev);
 
+        handleLiveEvent({
+            type: 'SET_COMPLETED',
+            payload: {
+                exercise: previousSessionData?.intensityPill?.text ?? 'Working set',
+                reps: restInfo.reps,
+                symmetryPct: symmetryPct ?? undefined,
+                fatigueDelta: readinessBefore - readinessAfter,
+            },
+        });
+
         if (options.undoLabel) {
             registerUndo('end_set', options.undoLabel, {
                 sessionData: previousSessionData,
@@ -2606,7 +2894,7 @@ useEffect(() => {
             setFatigueFallDismissed(false);
             resetFatigue();
         }
-    }, [sessionData, sessionPhase, preSetReadiness, completedSets, registerUndo, fatigueEnabled, logAnalyticsEvent, resetFatigue, fatigueState, initialReadinessScore, weeklyTrend, rawPeakHistory, applyPlanToPrediction, recordCoachOutcome, planToScenario]);
+    }, [sessionData, sessionPhase, preSetReadiness, completedSets, registerUndo, fatigueEnabled, logAnalyticsEvent, resetFatigue, fatigueState, initialReadinessScore, weeklyTrend, rawPeakHistory, applyPlanToPrediction, recordCoachOutcome, planToScenario, handleLiveEvent]);
 
     const handleContinueAnyway = useCallback(() => {
         if (!activeStopSuggestion) return;
@@ -2642,7 +2930,11 @@ useEffect(() => {
         const nextData = predictor.current.predictReadiness();
         setSessionData(nextData);
         setSessionPhase('active');
-    }, [sessionData, sessionPhase, preSetReadiness, completedSets, registerUndo]);
+        handleLiveEvent({
+            type: 'BLOCK_SKIPPED',
+            payload: { exercise: sessionData.intensityPill?.text ?? 'Working set' },
+        });
+    }, [sessionData, sessionPhase, preSetReadiness, completedSets, registerUndo, handleLiveEvent]);
 
     const handleSkipExercise = useCallback(() => {
         endTraining();

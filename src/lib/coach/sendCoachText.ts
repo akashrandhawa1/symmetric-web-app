@@ -1,5 +1,7 @@
-import { COACH_SYSTEM, COACH_SAFE_FALLBACK } from './constants';
+import { COACH_SAFE_FALLBACK } from './constants';
 import { resolveGeminiApiKey } from '../geminiKey';
+import { coachState } from '../../components/coach/coachPhase';
+import { buildCoachSystemPrompt, type CoachPhase } from './systemPrompt';
 
 const LOCAL_FUNCTION_PORT = 8888;
 
@@ -41,11 +43,11 @@ const callGeminiDirect = async (payload: Record<string, unknown>): Promise<strin
   console.log('[callGeminiDirect] User prompt length:', input.length);
   console.log('[callGeminiDirect] User prompt:', input);
 
-  const model = typeof payload.model === 'string' && payload.model.trim() ? payload.model : 'gemini-2.5-flash-lite';
+  const model = typeof payload.model === 'string' && payload.model.trim() ? payload.model : 'gemini-2.0-flash';
 
   try {
     const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${apiKey}`,
+      `https://generativelanguage.googleapis.com/v1/models/${encodeURIComponent(model)}:generateContent?key=${apiKey}`,
       {
         method: 'POST',
         mode: 'cors',
@@ -87,10 +89,14 @@ const callGeminiDirect = async (payload: Record<string, unknown>): Promise<strin
 };
 
 export async function sendCoachText(userPrompt: string, extra?: Record<string, any>): Promise<string> {
+  const phase: CoachPhase =
+    (extra?.phase as CoachPhase) ??
+    (coachState?.phase ?? 'live');
   const payload = {
-    system: COACH_SYSTEM,
+    system: buildCoachSystemPrompt(phase),
     input: userPrompt,
     scope: 'quads-strength-recovery-only',
+    phase,
     ...(extra ?? {}),
   };
 

@@ -13,6 +13,137 @@ export function saveCoachDecision({ sessionId, setIdx, phase, suggestionId, why 
 import { Type } from "@google/genai";
 import { STORAGE_KEY, RECOVERY_THRESHOLD } from "./constants";
 import { resolveGeminiApiKey } from "./lib/geminiKey";
+import { loadIntakeProfile, type StoredIntakeProfile } from "./coach/intake/profileStorage";
+import type { PlanSummary } from "./coach/intake/openSchema";
+
+type IntakeProfilePayload = {
+    answers: Record<string, any>;
+    planSummary?: PlanSummary | null;
+    savedAt?: number;
+};
+
+const serialiseIntakeProfileForPayload = (profile: StoredIntakeProfile | null): IntakeProfilePayload | null => {
+    if (!profile) return null;
+    return {
+        answers: profile.answers ?? {},
+        planSummary: profile.planSummary ?? null,
+        savedAt: profile.savedAt,
+    };
+};
+
+const normaliseString = (value: unknown): string => {
+    if (value == null) return '';
+    if (typeof value === 'string') return value.trim();
+    return String(value).trim();
+};
+
+const summariseIntakeProfileForPrompt = (profile: StoredIntakeProfile | null): string[] => {
+    if (!profile) return [];
+    const answers = profile.answers ?? {};
+    const summaryPairs: Array<[string, unknown]> = [
+        ["name", answers.name],
+        ["goal_intent", answers.goal_intent],
+        ["motivation", answers.motivation],
+        ["timeline", answers.timeline],
+        ["branch", answers.branch],
+        ["performance_focus", answers.performance_focus],
+        ["constraints", answers.constraints],
+        ["past_injuries", answers.past_injuries],
+        ["experience_level", answers.experience_level],
+        ["confidence", answers.form_confidence],
+        ["environment", answers.environment],
+        ["equipment", answers.equipment],
+        ["frequency", answers.frequency],
+        ["session_length", answers.session_length],
+        ["preferences", answers.preferences],
+        ["program_style", answers.program_style],
+    ];
+    const lines: string[] = [];
+    for (const [label, value] of summaryPairs) {
+        if (value == null) continue;
+        const text = typeof value === "string" ? value.trim() : value;
+        if (text === "" || text === undefined) continue;
+        lines.push(`${label}: ${typeof text === "string" ? text : JSON.stringify(text)}`);
+    }
+    if (profile.planSummary) {
+        lines.push(`plan_summary: ${JSON.stringify(profile.planSummary)}`);
+    }
+    return lines;
+};
+
+const buildIntakeHighlights = (profile: StoredIntakeProfile | null): string[] => {
+    if (!profile) return [];
+    const answers = profile.answers ?? {};
+    const summary = profile.planSummary ?? null;
+
+    const goalRaw = normaliseString(summary?.goal ?? answers.goal_intent ?? answers.goal ?? 'general strength');
+    const motivationRaw = normaliseString(answers.motivation ?? '');
+    const environmentRaw = normaliseString(answers.environment ?? '');
+    const equipmentRaw = answers.equipment;
+    const environmentLower = environmentRaw.toLowerCase();
+    const equipmentList = Array.isArray(equipmentRaw)
+        ? equipmentRaw.map((item) => normaliseString(item)).filter(Boolean)
+        : normaliseString(equipmentRaw ?? '')
+            .split(/[,/]|\band\b|\bwith\b/)
+            .map((part) => part.trim())
+            .filter(Boolean);
+    const equipmentLineRaw = equipmentList.length ? equipmentList.join(', ') : normaliseString(answers.equipment ?? 'bodyweight');
+    const equipmentLineLower = equipmentLineRaw.toLowerCase();
+    const limitedToBodyweight = (
+        !equipmentList.length && environmentLower.includes('minimal')
+    ) || (
+        equipmentList.length === 0 && equipmentLineLower.includes('bodyweight')
+    ) || (
+        equipmentList.length > 0 &&
+        equipmentList.every((item) => {
+            const value = item.toLowerCase();
+            return value.includes('bodyweight') || value.includes('band');
+        })
+    );
+    const onlyDumbbells = equipmentList.length > 0 &&
+        equipmentList.every((item) => item.toLowerCase().includes('dumbbell')) &&
+        !environmentLower.includes('gym') &&
+        !equipmentLineLower.includes('barbell');
+    const hasFullGymAccess = environmentLower.includes('full') || environmentLower.includes('gym');
+
+    let equipmentLine = equipmentLineRaw;
+    if (limitedToBodyweight) {
+        const bandsIncluded = equipmentList.some((item) => item.toLowerCase().includes('band'));
+        equipmentLine = bandsIncluded
+            ? 'bodyweight & bands only (no external weights)'
+            : 'bodyweight only (no external load)';
+    } else if (onlyDumbbells) {
+        equipmentLine = 'dumbbells only (no barbells or machines)';
+    } else if (hasFullGymAccess) {
+        equipmentLine = 'full gym access';
+    }
+
+    const daysPerWeek = summary?.days_per_week ?? Number.parseInt(normaliseString(answers.frequency ?? ''), 10);
+    const sessionLengthMin = summary?.session_length_min ?? Number.parseInt(normaliseString(answers.session_length ?? ''), 10);
+    const scheduleLine = [
+        Number.isFinite(daysPerWeek) && daysPerWeek ? `${daysPerWeek} sessions/week` : null,
+        Number.isFinite(sessionLengthMin) && sessionLengthMin ? `${sessionLengthMin} min each` : null,
+    ]
+        .filter(Boolean)
+        .join(', ');
+
+    const constraintsRaw = normaliseString(answers.constraints ?? summary?.constraints_notes ?? 'none');
+    const preferencesRaw = normaliseString(answers.preferences ?? '');
+    const focusRaw = normaliseString(answers.performance_focus ?? '');
+    const styleRaw = normaliseString(answers.program_style ?? '');
+
+    return [
+        goalRaw ? `Goal focus: ${goalRaw}.` : null,
+        motivationRaw ? `Motivation: ${motivationRaw}.` : null,
+        environmentRaw ? `Primary environment: ${environmentRaw}.` : null,
+        equipmentLine ? `Equipment available: ${equipmentLine}.` : null,
+        scheduleLine ? `Schedule cadence: ${scheduleLine}.` : null,
+        constraintsRaw && constraintsRaw.toLowerCase() !== 'none' ? `Protect constraints/injuries: ${constraintsRaw}.` : null,
+        preferencesRaw ? `Preferences: ${preferencesRaw}.` : null,
+        focusRaw ? `Performance focus: ${focusRaw}.` : null,
+        styleRaw ? `Program style preference: ${styleRaw}.` : null,
+    ].filter((line): line is string => Boolean(line && line.length));
+};
 import type {
     CompletedSet,
     ChatMessage,
@@ -41,7 +172,7 @@ const FALLBACK_ANALYSIS = {
     ],
 };
 
-const QUAD_EXERCISE_IDS = new Set([
+const LOWER_BODY_EXERCISE_IDS = new Set([
     'heel_elevated_front_squat',
     'rear_foot_split_squat',
     'sled_push',
@@ -55,6 +186,12 @@ const QUAD_EXERCISE_IDS = new Set([
     'barbell_front_squat',
     'barbell_safety_squat',
     'trap_bar_deadlift_quads',
+    'trap_bar_deadlift',
+    'hip_thrust',
+    'glute_bridge',
+    'romanian_deadlift_db',
+    'hamstring_curl_ball',
+    'calf_raise',
     'smith_machine_front_squat',
     'smith_machine_split_squat',
     'split_squat_iso',
@@ -66,7 +203,7 @@ const QUAD_EXERCISE_IDS = new Set([
     'wall_sit_isometric',
 ]);
 
-const QUAD_KEYWORDS = [
+const LOWER_BODY_KEYWORDS = [
     'squat',
     'lunge',
     'split',
@@ -77,6 +214,13 @@ const QUAD_KEYWORDS = [
     'quad',
     'wall sit',
     'bike',
+    'hip',
+    'hinge',
+    'deadlift',
+    'bridge',
+    'glute',
+    'hamstring',
+    'calf',
 ];
 
 export type HomeRecommendation = {
@@ -157,6 +301,431 @@ export type WorkoutPlan = {
         delta: number;
     };
     mode?: "strength" | "readiness_training" | "off_day";
+};
+
+type WorkoutContextInput = Parameters<typeof fetchDailyWorkoutPlan>[0];
+
+type EquipmentAllowance = {
+    fullAccess: boolean;
+    allowed: Set<string>;
+    description: string;
+};
+
+type EquipmentViolation = {
+    index: number;
+    exercise: string;
+    required: string[];
+};
+
+const canonicaliseEquipmentToken = (value: string): string | null => {
+    const lowered = normaliseString(value).toLowerCase();
+    if (!lowered) return null;
+    if (lowered.includes('bodyweight')) return 'bodyweight';
+    if (lowered.includes('band')) return 'bands';
+    if (lowered.includes('dumbbell') || lowered.includes('db')) return 'dumbbell';
+    if (lowered.includes('kettlebell') || lowered.includes('kb')) return 'kettlebell';
+    if (lowered.includes('barbell') || lowered.includes('oly bar') || lowered.includes('rack')) return 'barbell';
+    if (
+        lowered.includes('machine') ||
+        lowered.includes('leg press') ||
+        lowered.includes('extension') ||
+        lowered.includes('hack squat') ||
+        lowered.includes('smith')
+    ) {
+        return 'machine';
+    }
+    if (lowered.includes('sled')) return 'sled';
+    if (lowered.includes('bike') || lowered.includes('erg')) return 'bike';
+    if (lowered.includes('gym')) return 'gym';
+    if (lowered.includes('full')) return 'full';
+    if (lowered.includes('minimal')) return 'minimal';
+    return lowered.replace(/\s+/g, ' ');
+};
+
+const deriveEquipmentAllowance = (profile: StoredIntakeProfile | null): EquipmentAllowance => {
+    if (!profile) {
+        return {
+            fullAccess: true,
+            allowed: new Set(['bodyweight', 'bands', 'dumbbell', 'kettlebell', 'barbell', 'machine', 'sled', 'bike']),
+            description: 'general gym access (default)',
+        };
+    }
+
+    const tokens = new Set<string>();
+    const answers = profile.answers ?? {};
+
+    const addTokensFromValue = (value: unknown) => {
+        if (!value) return;
+        if (Array.isArray(value)) {
+            for (const item of value) {
+                addTokensFromValue(item);
+            }
+            return;
+        }
+        if (typeof value === 'string') {
+            value
+                .split(/[,/]|&|;|\band\b|\bor\b/)
+                .map((part) => part.trim())
+                .filter(Boolean)
+                .forEach((part) => tokens.add(part.toLowerCase()));
+        }
+    };
+
+    addTokensFromValue(answers.equipment);
+    addTokensFromValue(answers.environment);
+    addTokensFromValue(answers.plan_summary?.equipment);
+    if (profile.planSummary) {
+        addTokensFromValue((profile.planSummary as any).equipment);
+    }
+
+    const canonicalTokens = new Set<string>();
+    for (const token of tokens) {
+        const canonical = canonicaliseEquipmentToken(token);
+        if (canonical) {
+            canonicalTokens.add(canonical);
+        }
+    }
+
+    const fullAccess = canonicalTokens.has('gym') || canonicalTokens.has('full');
+    const allowed = new Set<string>(['bodyweight']);
+    if (fullAccess) {
+        ['bodyweight', 'bands', 'dumbbell', 'kettlebell', 'barbell', 'machine', 'sled', 'bike'].forEach((token) =>
+            allowed.add(token),
+        );
+    } else {
+        if (canonicalTokens.has('bands') || canonicalTokens.has('band')) allowed.add('bands');
+        if (canonicalTokens.has('dumbbell')) allowed.add('dumbbell');
+        if (canonicalTokens.has('kettlebell')) allowed.add('kettlebell');
+        if (canonicalTokens.has('barbell')) allowed.add('barbell');
+        if (canonicalTokens.has('machine')) allowed.add('machine');
+        if (canonicalTokens.has('sled')) allowed.add('sled');
+        if (canonicalTokens.has('bike')) allowed.add('bike');
+        if (canonicalTokens.has('minimal')) {
+            const hasAdditionalEquipment = ['dumbbell', 'kettlebell', 'barbell', 'machine', 'sled', 'bike'].some((token) =>
+                canonicalTokens.has(token),
+            );
+            if (!hasAdditionalEquipment) {
+                allowed.clear();
+                allowed.add('bodyweight');
+                allowed.add('bands');
+            }
+        }
+    }
+
+    const description = fullAccess
+        ? 'full gym access'
+        : Array.from(allowed)
+              .sort()
+              .join(', ');
+
+    return {
+        fullAccess,
+        allowed,
+        description,
+    };
+};
+
+const inferEquipmentForExercise = (exerciseId: string | undefined, displayName: string | undefined): string[] => {
+    const text = `${exerciseId ?? ''} ${displayName ?? ''}`.toLowerCase();
+    const equipment = new Set<string>();
+
+    const add = (value: string) => {
+        equipment.add(value);
+    };
+
+    if (text.includes('bodyweight')) {
+        equipment.clear();
+        add('bodyweight');
+        return Array.from(equipment);
+    }
+
+    if (text.includes('barbell')) add('barbell');
+    if (text.includes('smith')) add('machine');
+    if (text.includes('leg press') || text.includes('extension') || text.includes('hack squat')) add('machine');
+    if (text.includes('machine')) add('machine');
+    if (text.includes('sled')) add('sled');
+    if (text.includes('bike') || text.includes('erg')) add('bike');
+    if (text.includes('dumbbell')) add('dumbbell');
+    if (text.includes('goblet')) add('dumbbell');
+    if (text.includes('kettlebell')) add('kettlebell');
+    if (text.includes('band')) {
+        add('bands');
+        add('bodyweight');
+    }
+
+    if (equipment.size === 0) {
+        add('bodyweight');
+    }
+
+    return Array.from(equipment);
+};
+
+const detectEquipmentViolations = (blocks: WorkoutPlan['blocks'], allowance: EquipmentAllowance): EquipmentViolation[] => {
+    if (allowance.fullAccess) return [];
+    const violations: EquipmentViolation[] = [];
+    blocks.forEach((block, index) => {
+        const required = Array.isArray(block.exercise?.equipment_required) && block.exercise.equipment_required.length
+            ? block.exercise.equipment_required
+            : inferEquipmentForExercise(block.exercise?.id, block.exercise?.name);
+        const canonicalRequired = required
+            .map((item) => canonicaliseEquipmentToken(item))
+            .filter((item): item is string => Boolean(item));
+        const missing = canonicalRequired.filter(
+            (token) => token !== 'bodyweight' && !allowance.allowed.has(token),
+        );
+        if (missing.length) {
+            violations.push({
+                index,
+                exercise: block.exercise?.name ?? block.label,
+                required: missing,
+            });
+        }
+    });
+    return violations;
+};
+
+const enforceEquipmentGuardrail = (
+    plan: WorkoutPlan,
+    allowance: EquipmentAllowance,
+    context: WorkoutContextInput,
+    fallback: WorkoutPlan,
+): WorkoutPlan => {
+    if (allowance.fullAccess) return plan;
+
+    const filteredBlocks = plan.blocks.filter((block) => {
+        const required = Array.isArray(block.exercise?.equipment_required) && block.exercise.equipment_required.length
+            ? block.exercise.equipment_required
+            : inferEquipmentForExercise(block.exercise?.id, block.exercise?.name);
+        return required.every((token) => {
+            const canonical = canonicaliseEquipmentToken(token);
+            if (!canonical) return true;
+            if (canonical === 'bodyweight') return true;
+            return allowance.allowed.has(canonical);
+        });
+    });
+
+    if (filteredBlocks.length === plan.blocks.length) {
+        return plan;
+    }
+
+    if (filteredBlocks.length > 0) {
+        const adjustedNotes = `${plan.plan_meta.notes ?? ''} (trimmed for equipment availability)`.trim();
+        return {
+            ...plan,
+            blocks: filteredBlocks,
+            plan_meta: {
+                ...plan.plan_meta,
+                notes: adjustedNotes,
+            },
+        };
+    }
+
+    return buildBodyweightFallbackPlan(context, plan, fallback);
+};
+
+const buildBodyweightFallbackPlan = (
+    context: WorkoutContextInput,
+    planTemplate: WorkoutPlan,
+    fallback: WorkoutPlan,
+): WorkoutPlan => {
+    const readinessStart = Math.max(30, Math.round(context.readiness ?? planTemplate.plan_meta.readiness ?? 65));
+    const highReadiness = readinessStart >= 60;
+    let currentReadiness = readinessStart;
+
+    const makeBlock = (
+        role: string,
+        exerciseName: string,
+        blockType: WorkoutPlan['blocks'][number]['type'],
+        sets: number,
+        reps: string,
+        rest: number,
+        tempo: string,
+        cost: number,
+        notes: string,
+        load: WorkoutPlan['blocks'][number]['prescription']['load_adjustment'],
+        targetMvc = blockType === 'main' ? 65 : 50,
+    ): WorkoutPlan['blocks'][number] => {
+        const before = currentReadiness;
+        const after = Math.max(0, before - cost);
+        currentReadiness = after;
+        const label = `${role} – ${exerciseName}`;
+        return {
+            label,
+            type: blockType,
+            exercise: {
+                id: `${role}-${exerciseName}`.toLowerCase().replace(/[^a-z0-9]+/g, '_'),
+                name: exerciseName,
+                quad_dominant: true,
+                equipment_required: ['bodyweight'],
+            },
+            prescription: {
+                sets,
+                reps,
+                tempo,
+                rest_s: rest,
+                load_adjustment: load,
+            },
+            criteria: {
+                target_mvc_pct_min: targetMvc,
+                stop_if: ['pain', 'loss of balance', 'symmetry < 80%'],
+            },
+            evidence: {
+                metrics: ['readiness', 'symmetry_pct', 'fatigue_index'],
+                rationale: notes,
+                policy_rule_applied: 'equipment_guardrail',
+            },
+            assumptions: [`Template slot: ${role}`, 'Bodyweight-only fallback applied'],
+            expect_label: true,
+            readiness_before: before,
+            readiness_after: after,
+            block_cost: cost,
+        };
+    };
+
+    const bodyweightBlocks: WorkoutPlan['blocks'] = [
+        makeBlock(
+            'Warmup',
+            'Quad Activation Flow',
+            'primer',
+            2,
+            '30s each move',
+            30,
+            'continuous',
+            highReadiness ? 3 : 2,
+            'Open with dynamic mobility and activation to prep hips, knees, and trunk for the main lift.',
+            'n/a',
+            45,
+        ),
+        makeBlock(
+            'Main Lift',
+            highReadiness ? 'Tempo Pistols to Box' : 'Bodyweight Tempo Squat',
+            'main',
+            highReadiness ? 4 : 3,
+            highReadiness ? '5/side' : '8',
+            highReadiness ? 90 : 75,
+            '31X1',
+            highReadiness ? 10 : 7,
+            'Main effort stays inside 1-5 reps per leg to mirror a heavy/technique day without external load.',
+            highReadiness ? 'hold' : 'decrease',
+            65,
+        ),
+        makeBlock(
+            'Secondary',
+            'Split-Squat Isometric Drop-In',
+            'main',
+            3,
+            '3 x 0:20/side',
+            45,
+            'iso',
+            highReadiness ? 6 : 5,
+            'Secondary slot reinforces unilateral strength and positions without adding systemic fatigue.',
+            'decrease',
+            60,
+        ),
+        makeBlock(
+            'Accessory A',
+            'Cossack Squat Reach',
+            'accessory',
+            3,
+            '12/side',
+            45,
+            '2111',
+            4,
+            'Accessory A builds frontal plane control and end-range strength.',
+            'n/a',
+            55,
+        ),
+        makeBlock(
+            'Accessory B',
+            'Step-Up Knee Drive',
+            'accessory',
+            3,
+            '15/side',
+            45,
+            '2111',
+            3,
+            'Accessory B pumps volume with moderate reps per Westside accessory guidance.',
+            'n/a',
+            55,
+        ),
+        makeBlock(
+            'Accessory C',
+            'Reverse Nordic Curl',
+            'accessory',
+            2,
+            '12',
+            45,
+            '3121',
+            3,
+            'Accessory C targets knee extension strength and quad lengthening.',
+            'n/a',
+            55,
+        ),
+        makeBlock(
+            'Midline',
+            'Hollow Body Rock',
+            'accessory',
+            3,
+            '20',
+            30,
+            'controlled',
+            2,
+            'Midline slot keeps trunk stiffness and anti-extension strength in rotation.',
+            'n/a',
+            50,
+        ),
+        makeBlock(
+            'GPP / Finisher',
+            'Stationary Lunge March',
+            'finisher',
+            3,
+            '0:40 on / 0:20 off',
+            20,
+            'continuous',
+            2,
+            'Finisher drives GPP with continuous cyclical work to flush and build capacity.',
+            'n/a',
+            50,
+        ),
+        makeBlock(
+            'Mobility',
+            '90/90 Rotations & Hip Flexor Pulse',
+            'primer',
+            2,
+            '45s each',
+            20,
+            'controlled',
+            1,
+            'Close with mobility focused on hips and low back resilience for long chair days.',
+            'n/a',
+            40,
+        ),
+    ];
+
+    const projectedAfter = currentReadiness;
+    const delta = projectedAfter - readinessStart;
+    const notes = 'Bodyweight-only fallback session generated to respect equipment constraints and Westside-style template.';
+    const referencePolicy = planTemplate.policy ?? fallback.policy;
+
+    return {
+        policy: referencePolicy,
+        plan_meta: {
+            intent: 'quad_strength',
+            readiness: readinessStart,
+            recovery_window: context.recoveryHours ? `~${Math.round(context.recoveryHours)}h` : fallback.plan_meta.recovery_window,
+            notes,
+            confidence: Math.min(0.75, planTemplate.plan_meta.confidence ?? 0.8),
+        },
+        blocks: bodyweightBlocks,
+        alternatives: [],
+        telemetry_focus: planTemplate.telemetry_focus ?? fallback.telemetry_focus,
+        projected: {
+            readinessBefore: readinessStart,
+            readinessAfter: projectedAfter,
+            delta,
+        },
+        mode: readinessStart >= 49 ? 'strength' : 'readiness_training',
+    };
 };
 
 export interface CoachPromptLastSessionContext {
@@ -723,21 +1292,32 @@ const resolveBooleanFlag = (
     return defaultValue;
 };
 
-const isQuadBlock = (block: WorkoutPlan['blocks'][number] | undefined): boolean => {
-    if (!block || !block.exercise) return false;
+const isLowerBodyBlock = (block: WorkoutPlan['blocks'][number] | undefined): boolean => {
+    if (!block) return false;
+    const labelText = typeof block.label === 'string' ? block.label.toLowerCase() : '';
+    if (
+        labelText.includes('warmup') ||
+        labelText.includes('mobility') ||
+        labelText.includes('finisher') ||
+        labelText.includes('gpp') ||
+        labelText.includes('midline')
+    ) {
+        return true;
+    }
+    if (!block.exercise) return false;
     const id = typeof block.exercise.id === 'string' ? block.exercise.id.toLowerCase() : '';
-    if (id && QUAD_EXERCISE_IDS.has(id)) return true;
+    if (id && LOWER_BODY_EXERCISE_IDS.has(id)) return true;
     if (block.exercise.quad_dominant === true) return true;
     const name = typeof block.exercise.name === 'string' ? block.exercise.name.toLowerCase() : '';
-    if (name && QUAD_KEYWORDS.some((keyword) => name.includes(keyword))) return true;
+    if (name && LOWER_BODY_KEYWORDS.some((keyword) => name.includes(keyword))) return true;
     return false;
 };
 
-const enforceQuadFocus = (plan: WorkoutPlan, fallback: WorkoutPlan): WorkoutPlan => {
+const ensureLowerBodyFocus = (plan: WorkoutPlan, fallback: WorkoutPlan): WorkoutPlan => {
     const fallbackBlocks = fallback.blocks;
     let replaced = false;
     const adjusted = plan.blocks.map((block, index) => {
-        if (isQuadBlock(block)) {
+        if (isLowerBodyBlock(block)) {
             return block;
         }
         replaced = true;
@@ -1034,10 +1614,10 @@ const isGeminiActive = () => {
 };
 
 const GEMINI_MODELS = {
-    primary: "gemini-2.5-flash-lite",
-    lite: "gemini-2.5-flash-lite",
+    primary: "gemini-2.0-flash",
+    lite: "gemini-2.0-flash-lite",
     heavy: "gemini-2.5-flash",
-    streaming: "gemini-2.5-flash",
+    streaming: "gemini-2.0-flash",
     tts: "gemini-2.5-flash-tts",
 } as const;
 
@@ -1137,8 +1717,6 @@ export const defaultWorkoutPlan: WorkoutPlan = {
     ],
     telemetry_focus: ["%MVC_peak", "RoR_0_150", "symmetry_pct", "fatigue_index"],
 };
-
-type WorkoutContextInput = Parameters<typeof fetchDailyWorkoutPlan>[0];
 
 const OFFLINE_BLOCK_LIBRARY = {
     high: {
@@ -1619,6 +2197,14 @@ const coalesceCandidateText = (payload: any): string | undefined => {
     return undefined;
 };
 
+const shouldRetryGeminiError = (error: unknown): boolean => {
+    const message = error instanceof Error ? error.message : String(error ?? "");
+    const lower = message.toLowerCase();
+    return lower.includes('429') || lower.includes('resource exhausted') || lower.includes('quota') || lower.includes('overloaded');
+};
+
+const sleepMs = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
 const createGeminiClient = (apiKey: string): GeminiClient => {
     const baseUrl = GEMINI_API_BASE_URL.replace(/\/+$/, '');
 
@@ -1790,6 +2376,80 @@ export const getGeminiClient = (): GeminiClient | null => {
     }
     return geminiClient;
 };
+
+export async function generateIntakeGemini(
+    systemPrompt: string,
+    userPayload: string,
+    {
+        signal,
+        model = GEMINI_MODELS.lite,
+        maxRetries = 2,
+        retryDelayMs = 800,
+    }: { signal?: AbortSignal; model?: string; maxRetries?: number; retryDelayMs?: number } = {},
+): Promise<string | null> {
+    if (signal?.aborted) {
+        throw new DOMException('Aborted', 'AbortError');
+    }
+
+    if (!isGeminiActive()) {
+        return null;
+    }
+
+    let attempt = 0;
+    let lastError: unknown;
+
+    while (attempt <= maxRetries) {
+        if (signal?.aborted) {
+            throw new DOMException('Aborted', 'AbortError');
+        }
+
+        try {
+            const client = getGeminiClient();
+            if (!client) {
+                return null;
+            }
+
+            const response = await client.models.generateContent({
+                model,
+                contents: [{ role: "user", parts: [{ text: userPayload }] }],
+                config: {
+                    abortSignal: signal,
+                    temperature: 0.55,
+                    maxOutputTokens: 320,
+                    responseMimeType: "application/json",
+                },
+                systemInstruction: { role: "system", parts: [{ text: systemPrompt }] },
+            });
+
+            if (signal?.aborted) {
+                throw new DOMException('Aborted', 'AbortError');
+            }
+
+            const raw = response.text ?? (await extractText(response));
+            return raw ? raw.trim() : null;
+        } catch (error) {
+            if (isAbortError(error)) {
+                throw new DOMException('Aborted', 'AbortError');
+            }
+
+            lastError = error;
+            if (attempt < maxRetries && shouldRetryGeminiError(error)) {
+                const delay = retryDelayMs * Math.pow(2, attempt);
+                await sleepMs(delay);
+                attempt += 1;
+                continue;
+            }
+
+            console.warn('[generateIntakeGemini] Gemini request failed:', normaliseGeminiError('coach_intake', error));
+            return null;
+        }
+    }
+
+    if (lastError) {
+        console.warn('[generateIntakeGemini] Exhausted retries:', normaliseGeminiError('coach_intake', lastError));
+    }
+    return null;
+}
 
 export const extractText = async (result: any): Promise<string> => {
     if (!result) return '';
@@ -2615,6 +3275,13 @@ export async function fetchHomeHeroCopy(
         context === 'postWorkout' ||
         (timeSinceLastSessionMinutes != null && timeSinceLastSessionMinutes <= 20);
 
+    const storedProfileForHero = typeof window === 'undefined' ? null : loadIntakeProfile();
+    const intakeSummaryLines = summariseIntakeProfileForPrompt(storedProfileForHero);
+
+    const referenceMovements = offlinePlan.blocks
+        .map((block) => `- ${block.exercise.name}`)
+        .join('\n');
+
     const promptLines: string[] = [
         "You are a warm, encouraging personal trainer. Speak like a human who knows this athlete.",
         "",
@@ -2660,6 +3327,16 @@ export async function fetchHomeHeroCopy(
         "- If justFinished=true, acknowledge the recent session briefly",
         "- Max 420 characters total",
     ];
+
+    if (intakeSummaryLines.length) {
+        const insertionIndex = promptLines.findIndex((line) => line === 'Exercise Selection Rules (CRITICAL)');
+        const linesToInsert = ['', 'Intake profile context (from Coach Milo intake):', ...intakeSummaryLines, ''];
+        if (insertionIndex >= 0) {
+            promptLines.splice(insertionIndex, 0, ...linesToInsert);
+        } else {
+            promptLines.push('', 'Intake profile context (from Coach Milo intake):', ...intakeSummaryLines, '');
+        }
+    }
 
     const prompt = promptLines.join('\n');
 
@@ -2763,6 +3440,15 @@ export async function fetchDailyWorkoutPlan(
         throw new DOMException('Aborted', 'AbortError');
     }
 
+    const storedIntakeProfile = typeof window === 'undefined' ? null : loadIntakeProfile();
+    const intakeProfilePayload = serialiseIntakeProfileForPayload(storedIntakeProfile);
+    const intakeSummaryLines = summariseIntakeProfileForPrompt(storedIntakeProfile);
+    console.log('[DailyWorkoutPlan] Intake profile loaded:', storedIntakeProfile ? 'YES' : 'NO');
+    console.log('[DailyWorkoutPlan] Intake summary lines:', intakeSummaryLines.length, 'lines');
+    if (intakeSummaryLines.length > 0) {
+        console.log('[DailyWorkoutPlan] Intake summary:', intakeSummaryLines);
+    }
+
     const offlinePlan = buildOfflineWorkoutPlan(context);
 
     if (!isGeminiActive()) {
@@ -2770,7 +3456,7 @@ export async function fetchDailyWorkoutPlan(
     }
 
     const proxyVarietyToken = Math.floor(Math.random() * 1000);
-    const proxyPayload = { context, varietyToken: proxyVarietyToken };
+    const proxyPayload = { context, varietyToken: proxyVarietyToken, intakeProfile: intakeProfilePayload };
 
     let proxyEnabled = resolveBooleanFlag('__ENABLE_DAILY_PROXY__', 'VITE_ENABLE_DAILY_PROXY', 'VITE_ENABLE_COACH_API', false);
     if (proxyEnabled && typeof window !== 'undefined') {
@@ -2796,7 +3482,7 @@ export async function fetchDailyWorkoutPlan(
             if (response.ok) {
                 const plan = (await response.json()) as WorkoutPlan;
                 if (plan && Array.isArray(plan.blocks) && plan.blocks.length > 0) {
-                    return enforceQuadFocus(plan, offlinePlan);
+                    return ensureLowerBodyFocus(plan, offlinePlan);
                 }
             }
 
@@ -2823,8 +3509,8 @@ export async function fetchDailyWorkoutPlan(
     const varietyToken = Math.floor(Math.random() * 1000);
 
     const promptLines: string[] = [
-        "You are Symmetric's Quad Strength Planner—expert in sEMG (RMS, rate-of-rise, %MVC), fatigue, and progressive overload for quadriceps development.",
-        "Return ONLY JSON per the schema at the end. No markdown or extra text.",
+        "You are Symmetric's adaptive lower-body planner—engineer a session that lands near readiness 50 while reflecting the athlete's intake profile.",
+        "Return ONLY JSON matching the schema at the end. No commentary, markdown, or stray text.",
         '',
         'PRIMARY DIRECTIVE (READ THIS FIRST)',
         'Every workout MUST bring readiness down to 50-55 by the end. This is your #1 goal.',
@@ -2850,9 +3536,16 @@ export async function fetchDailyWorkoutPlan(
         `est1RMKg: ${context.est1RMKg ?? 'null'}`,
         '',
         'Exercise Selection Rules (CRITICAL)',
+        'Respect equipment availability exactly as stated in the intake. Every prescribed movement must be fully doable with the athlete\'s actual equipment. When in doubt, choose the simpler option that demands less gear.',
+        'If the intake signals bodyweight-only or minimal setup, stick to bodyweight/band-friendly variations and avoid assuming access to external weights or machines.',
+        'Template expectations (Westside-inspired coach structure): Warmup → Main Lift → Secondary → Accessory A → Accessory B → Accessory C → Midline → GPP/Finisher → Mobility.',
+        'Always include a Warmup and Mobility block; include the other blocks unless readiness < 45, in which case you may drop the heavy Main/Secondary lifts but still map the remaining slots.',
+        'Format each displayName as "<ROLE> – Exercise" (e.g., "Warmup – Banded Leg Swings", "Main Lift – Tempo Back Squat").',
+        'Use 1–5 reps on heavy/technique main lifts, and 3–5 sets of 10–15 (sometimes 20+) on accessories, matching the Westside rotation style.',
+        'Adjust intensity (heavy vs technique vs omitted) per readiness and user context, but keep the block ordering consistent.',
         'STRENGTH MODE (readiness ≥ 49):',
-        '  - Primary exercises ONLY: Barbell Back Squat, Front Squat, Bulgarian Split Squat, Leg Press, Hack Squat',
-        '  - Accessory exercises ONLY: Leg Extension, Goblet Squat, Step-ups, Walking Lunges, Box Squats, Sissy Squat',
+        '  - Primary exercises ONLY: Barbell Back Squat, Front Squat, Bulgarian Split Squat, Leg Press, Hack Squat (equipment permitting)',
+        '  - Accessory exercises ONLY: Leg Extension, Goblet Squat, Step-ups, Walking Lunges, Box Squats, Sissy Squat (equipment permitting)',
         '  - NEVER use: planks, cardio, aerobic work, isometric holds, core work (these do NOT build quad strength)',
         '  - Structure: 1 main compound lift + as many accessories as needed to hit readiness target',
         '  - Total blocks: typically 3-5 exercises (2 blocks is rarely enough volume)',
@@ -3024,56 +3717,31 @@ export async function fetchDailyWorkoutPlan(
         'Keep your client-side validator that clamps/auto-switches if some response still violates the floor.',
     ];
 
+    // Inject intake profile context
+    if (intakeSummaryLines.length) {
+        const insertionIndex = promptLines.findIndex((line) => line === 'Exercise Selection Rules (CRITICAL)');
+
+        const linesToInsert = [
+            '',
+            'Intake profile context (from Coach Milo intake):',
+            ...intakeSummaryLines,
+            ''
+        ];
+
+        if (insertionIndex >= 0) {
+            promptLines.splice(insertionIndex, 0, ...linesToInsert);
+            console.log('[DailyWorkoutPlan] ✅ Intake profile injected at line', insertionIndex);
+        } else {
+            promptLines.push('', 'Intake profile context (from Coach Milo intake):', ...intakeSummaryLines, '');
+            console.log('[DailyWorkoutPlan] ✅ Intake profile appended to end of prompt');
+        }
+    } else {
+        console.log('[DailyWorkoutPlan] ⚠️ No intake profile to inject');
+    }
+
     const prompt = promptLines.join('\n');
 
-    // Retry function with exponential backoff for 503 errors
-    const retryWithBackoff = async (maxRetries = 3, baseDelay = 2000) => {
-        let lastError: any;
-        for (let attempt = 0; attempt < maxRetries; attempt++) {
-            try {
-                return await client.models.generateContent({
-                    model: 'gemini-2.5-flash-lite',
-                    contents: [{ role: 'user', parts: [{ text: prompt }] }],
-                    config: {
-                        abortSignal: signal,
-                        temperature: 0.2,
-                        responseMimeType: 'application/json',
-                        maxOutputTokens: 1500,  // Increased for complete workout plans
-                    },
-                });
-            } catch (error: any) {
-                lastError = error;
-                const errorMsg = error?.message || String(error);
-                const is503 = errorMsg.includes('503') || errorMsg.includes('overloaded') || errorMsg.includes('UNAVAILABLE');
-                const is429 = errorMsg.includes('429') || errorMsg.includes('quota');
-
-                if (is503 || is429) {
-                    if (attempt < maxRetries - 1) {
-                        const delay = baseDelay * Math.pow(2, attempt);
-                        console.warn(`[DailyWorkoutPlan] Gemini overloaded (attempt ${attempt + 1}/${maxRetries}), retrying in ${delay}ms...`);
-                        await new Promise(resolve => setTimeout(resolve, delay));
-                    }
-                } else {
-                    throw error;
-                }
-            }
-        }
-        throw lastError;
-    };
-
-    try {
-        console.log('[DailyWorkoutPlan] Starting Gemini API call...');
-        const response = await retryWithBackoff(3, 2000);
-        console.log('[DailyWorkoutPlan] Gemini API call successful');
-
-        if (signal.aborted) {
-            throw new DOMException('Aborted', 'AbortError');
-        }
-
-        const raw = response.text ?? (await extractText(response));
-        console.log('[DailyWorkoutPlan] Raw response length:', raw?.length);
-        console.log('[DailyWorkoutPlan] Raw response (first 500 chars):', raw?.substring(0, 500));
-
+    const processGeminiRaw = (raw: string): WorkoutPlan => {
         const parsed = tryParseJsonObject(raw);
         console.log('[DailyWorkoutPlan] Parsed response keys:', parsed ? Object.keys(parsed) : 'null');
 
@@ -3088,7 +3756,6 @@ export async function fetchDailyWorkoutPlan(
             throw new Error('Plan missing blocks');
         }
 
-        // Validate Gemini's response schema (new format)
         const blocksAreUsable = blocksRaw.every((block) => {
             if (!block || typeof block !== 'object') return false;
             const b = block as Record<string, unknown>;
@@ -3106,10 +3773,8 @@ export async function fetchDailyWorkoutPlan(
             throw new Error('Plan blocks incomplete');
         }
 
-        // Transform Gemini response to WorkoutPlan format
         const transformedBlocks = blocksRaw.map((block, idx) => {
             const b = block as Record<string, unknown>;
-            const targets = (b.targets as Record<string, unknown>) || {};
             const readinessBefore =
                 typeof (b as any).readiness_before === 'number'
                     ? (b as any).readiness_before
@@ -3134,6 +3799,10 @@ export async function fetchDailyWorkoutPlan(
                 blockCostRaw != null && Number.isFinite(blockCostRaw)
                     ? Number(blockCostRaw)
                     : undefined;
+            const equipmentRequired = inferEquipmentForExercise(
+                b.exerciseId as string | undefined,
+                b.displayName as string | undefined,
+            );
             return {
                 label: b.displayName as string,
                 type: idx === 0 ? 'main' : 'accessory',
@@ -3141,7 +3810,7 @@ export async function fetchDailyWorkoutPlan(
                     id: b.exerciseId as string,
                     name: b.displayName as string,
                     quad_dominant: true,
-                    equipment_required: ['barbell', 'dumbbell'],
+                    equipment_required: equipmentRequired,
                 },
                 prescription: {
                     sets: b.sets as number,
@@ -3178,8 +3847,7 @@ export async function fetchDailyWorkoutPlan(
                 ? projectedAfter - readiness
                 : undefined;
 
-        // Build the complete WorkoutPlan
-        const workoutPlan: WorkoutPlan = {
+        return {
             policy: typeof candidate.policy === 'object' && candidate.policy !== null
                 ? candidate.policy as WorkoutPlan['policy']
                 : offlinePlan.policy,
@@ -3191,9 +3859,9 @@ export async function fetchDailyWorkoutPlan(
                 confidence: 0.8,
             },
             blocks: transformedBlocks as WorkoutPlan['blocks'],
-            alternatives: Array.isArray(candidate.alternatives) ? candidate.alternatives as any : [],
+            alternatives: Array.isArray(candidate.alternatives) ? (candidate.alternatives as any) : [],
             telemetry_focus: Array.isArray(candidate.telemetry_focus)
-                ? candidate.telemetry_focus as any
+                ? (candidate.telemetry_focus as any)
                 : ['%MVC_peak', 'RoR_0_150', 'symmetry_pct', 'readiness'],
             projected:
                 projectedAfter != null && projectedDelta != null
@@ -3214,14 +3882,108 @@ export async function fetchDailyWorkoutPlan(
                     ? (candidate.mode as WorkoutPlan['mode'])
                     : undefined,
         };
+    };
 
-        return enforceQuadFocus(workoutPlan, offlinePlan);
+    // Retry function with exponential backoff for 503 errors
+    const retryWithBackoff = async (promptText: string, maxRetries = 3, baseDelay = 2000) => {
+        let lastError: any;
+        for (let attempt = 0; attempt < maxRetries; attempt++) {
+            try {
+                return await client.models.generateContent({
+                    model: GEMINI_MODELS.primary,
+                    contents: [{ role: 'user', parts: [{ text: promptText }] }],
+                    config: {
+                        abortSignal: signal,
+                        temperature: 0.2,
+                        responseMimeType: 'application/json',
+                        maxOutputTokens: 1500,  // Increased for complete workout plans
+                    },
+                });
+            } catch (error: any) {
+                lastError = error;
+                const errorMsg = error?.message || String(error);
+                const is503 = errorMsg.includes('503') || errorMsg.includes('overloaded') || errorMsg.includes('UNAVAILABLE');
+                const is429 = errorMsg.includes('429') || errorMsg.includes('quota');
+
+                if (is503 || is429) {
+                    if (attempt < maxRetries - 1) {
+                        const delay = baseDelay * Math.pow(2, attempt);
+                        console.warn(`[DailyWorkoutPlan] Gemini overloaded (attempt ${attempt + 1}/${maxRetries}), retrying in ${delay}ms...`);
+                        await new Promise(resolve => setTimeout(resolve, delay));
+                    }
+                } else {
+                    throw error;
+                }
+            }
+        }
+        throw lastError;
+    };
+
+    const equipmentAllowance = deriveEquipmentAllowance(storedIntakeProfile);
+    const equipmentSummaryLine = intakeSummaryLines.find((line) =>
+        line.toLowerCase().startsWith('equipment available:'),
+    );
+
+    try {
+        let promptToUse = prompt;
+        let reinforcementApplied = false;
+        let finalPlan: WorkoutPlan | null = null;
+        let lastViolations: EquipmentViolation[] = [];
+
+        for (let attempt = 0; attempt < 2; attempt++) {
+            console.log(`[DailyWorkoutPlan] Starting Gemini API call (attempt ${attempt + 1})...`);
+            const response = await retryWithBackoff(promptToUse, 3, 2000);
+            console.log('[DailyWorkoutPlan] Gemini API call successful');
+
+            if (signal.aborted) {
+                throw new DOMException('Aborted', 'AbortError');
+            }
+
+            const raw = response.text ?? (await extractText(response));
+            console.log('[DailyWorkoutPlan] Raw response length:', raw?.length);
+            console.log('[DailyWorkoutPlan] Raw response (first 500 chars):', raw?.substring(0, 500));
+
+            const workoutPlan = processGeminiRaw(raw);
+            const violations = detectEquipmentViolations(workoutPlan.blocks, equipmentAllowance);
+
+            if (violations.length === 0 || equipmentAllowance.fullAccess) {
+                finalPlan = workoutPlan;
+                break;
+            }
+
+            lastViolations = violations;
+            console.warn(`[DailyWorkoutPlan] Equipment mismatches detected (attempt ${attempt + 1}):`, violations);
+
+            if (!reinforcementApplied) {
+                const allowedDescriptor = equipmentSummaryLine
+                    ? equipmentSummaryLine.replace(/^Equipment available:\s*/i, '').trim()
+                    : equipmentAllowance.description;
+                const violationDescriptor = violations
+                    .map((violation) => `${violation.exercise} requires ${violation.required.join('/')}`)
+                    .join('; ');
+                promptToUse = `${prompt}\n\nEquipment correction: The athlete only has ${allowedDescriptor}. Your previous attempt used: ${violationDescriptor}. Regenerate the full plan using only exercises that fit the available equipment while keeping the readiness projection consistent.`;
+                reinforcementApplied = true;
+                continue;
+            }
+
+            finalPlan = enforceEquipmentGuardrail(workoutPlan, equipmentAllowance, context, offlinePlan);
+            break;
+        }
+
+        if (!finalPlan) {
+            console.warn('[DailyWorkoutPlan] Falling back to equipment-safe template after repeated mismatches.', {
+                violations: lastViolations,
+            });
+            finalPlan = enforceEquipmentGuardrail(offlinePlan, equipmentAllowance, context, offlinePlan);
+        }
+
+        return ensureLowerBodyFocus(finalPlan, offlinePlan);
     } catch (error) {
         if (isAbortError(error)) {
             throw new DOMException('Aborted', 'AbortError');
         }
         console.warn('[Symmetric][DailyWorkoutPlan] Falling back:', normaliseGeminiError('dailyWorkoutPlan', error));
-        return enforceQuadFocus(offlinePlan, offlinePlan);
+        return ensureLowerBodyFocus(offlinePlan, offlinePlan);
     }
 }
 
