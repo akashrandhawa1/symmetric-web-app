@@ -5,38 +5,20 @@ export type IntakeBranch = "athlete" | "lifestyle";
 
 type CoachSCC = { suggest: string; confirm: string; compensate: string };
 
+// OPTIMIZED: Reduced from 30 topics to 7 core questions (5-7 depending on context)
 export const SCRIPTED_TOPIC_SEQUENCE: Topic[] = [
+  // TIER 1: Identity (2 questions)
   "name",
-  "goal_intent",
-  "goal_detail",
-  "motivation",
-  "timeline",
-  "sport_role",
-  "sport_position",
-  "performance_focus",
-  "occupation_type",
-  "daily_activity",
-  "constraints",
-  "past_injuries",
-  "mobility_limitations",
-  "soreness_pain",
-  "baseline_strength",
-  "baseline_conditioning",
-  "experience_level",
-  "form_confidence",
-  "program_style",
-  "environment",
-  "equipment",
-  "sensor_today",
-  "frequency",
-  "session_length",
-  "sleep_stress",
-  "soreness_pattern",
-  "preferences",
-  "coach_vibe",
-  "age_range",
-  "height_cm",
-  "weight_kg",
+  "primary_goal",            // Combines: goal_intent + goal_detail + motivation
+
+  // TIER 2: Context (2-3 questions, CONDITIONAL)
+  "training_context",        // Combines: experience + baseline_strength + form_confidence
+  "limitations",             // Combines: past_injuries + mobility + soreness + constraints
+  "sport_context",           // ONLY if they mention sport in primary_goal
+
+  // TIER 3: Logistics (2 questions)
+  "equipment_session",       // Combines: equipment + session_length + environment
+  "frequency_commitment",    // Combines: frequency + timeline
 ];
 
 export const SCC_SEEDS: Record<
@@ -56,6 +38,14 @@ export const SCC_SEEDS: Record<
 
 export const PERSONA_LINES: Record<Topic | "default", string> = {
   name: "Knowing your name keeps coaching personal",
+  // OPTIMIZED TOPICS
+  primary_goal: "Clear goals drive smart programming",
+  training_context: "Experience level shapes exercise selection",
+  limitations: "Protecting weak links keeps you training",
+  sport_context: "Sport context tailors transfer work",
+  equipment_session: "Setup and time define your sessions",
+  frequency_commitment: "Schedule anchors your plan",
+  // LEGACY TOPICS
   goal_intent: "Clear goals keep training sharp",
   goal_detail: "Details keep progress targeted",
   motivation: "Motivation cements adherence",
@@ -90,6 +80,35 @@ export const PERSONA_LINES: Record<Topic | "default", string> = {
 };
 
 export const CHIPS_BY_TOPIC: Partial<Record<Topic, string[]>> = {
+  // OPTIMIZED CHIPS for 7-question flow
+  primary_goal: [
+    "💪 Build max strength",
+    "🏋️ Add muscle size",
+    "⚡ Get faster/explosive",
+    "🏃 Train for a sport",
+    "🔄 Recover from injury",
+    "🎯 General fitness"
+  ],
+  training_context: [
+    "🌱 New (0-6 months)",
+    "💪 Some experience (6mo-2yrs)",
+    "🏋️ Solid lifter (2-5 years)",
+    "🏆 Very experienced (5+ years)"
+  ],
+  limitations: [], // Multi-entry tag input, no fixed chips
+  sport_context: [], // Open text with smart parsing
+  equipment_session: [
+    "🏋️ Barbell + plates",
+    "💪 Dumbbells",
+    "🔗 Resistance bands",
+    "📦 Squat rack",
+    "🦵 Leg press",
+    "🔌 Cable machine",
+    "🧍 Bodyweight only"
+  ],
+  frequency_commitment: ["1", "2", "3", "4", "5", "6", "7"],
+
+  // LEGACY CHIPS (backward compatibility)
   goal_intent: ["strength", "muscle", "general", "rehab"],
   goal_detail: ["lower body", "upper body", "overall fitness", "rehab"],
   motivation: ["upcoming event", "feel better daily", "sport performance", "injury prevention", "confidence boost"],
@@ -136,6 +155,14 @@ const DEFAULT_SPORT_POSITION_CHIPS = ["primary", "supporting", "hybrid", "rotati
 
 export const TOPIC_PHASE: Record<Topic, string> = {
   name: "rapport",
+  // OPTIMIZED TOPICS
+  primary_goal: "goal",
+  training_context: "experience",
+  limitations: "safety",
+  sport_context: "context",
+  equipment_session: "environment",
+  frequency_commitment: "schedule",
+  // LEGACY TOPICS
   goal_intent: "goal",
   goal_detail: "goal",
   motivation: "goal",
@@ -169,6 +196,14 @@ export const TOPIC_PHASE: Record<Topic, string> = {
 };
 
 const topicCategory = (topic: Topic): keyof typeof SCC_SEEDS => {
+  // OPTIMIZED TOPICS
+  if (topic === "primary_goal") return "goal";
+  if (topic === "training_context") return "experience";
+  if (topic === "limitations") return "safety";
+  if (topic === "sport_context") return "focus";
+  if (topic === "equipment_session") return "environment";
+  if (topic === "frequency_commitment") return "schedule";
+  // LEGACY TOPICS
   if (["goal_intent", "goal_detail", "motivation", "timeline"].includes(topic)) return "goal";
   if (["name", "age_range", "height_cm", "weight_kg"].includes(topic)) return "basics";
   if (

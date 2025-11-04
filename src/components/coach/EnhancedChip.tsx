@@ -47,23 +47,23 @@ export default function EnhancedChip({
         whileTap={{ scale: 0.95 }}
         animate={{
           backgroundColor: isSelected
-            ? 'rgb(59, 130, 246)'
+            ? 'rgb(0, 217, 163)' // Milo teal
             : recommended
-            ? 'rgba(59, 130, 246, 0.15)'
+            ? 'rgba(0, 217, 163, 0.15)'
             : 'rgb(38, 38, 38)',
           scale: isSelected ? 1.02 : 1,
           borderColor: isSelected
-            ? 'rgb(59, 130, 246)'
+            ? 'rgb(0, 217, 163)' // Milo teal
             : recommended
-            ? 'rgba(59, 130, 246, 0.4)'
+            ? 'rgba(0, 217, 163, 0.4)'
             : 'rgb(64, 64, 64)'
         }}
         transition={{ type: "spring", stiffness: 500, damping: 30 }}
         className={`
           relative inline-flex items-center gap-2 rounded-full px-4 py-2.5 text-sm font-medium
           border transition-all
-          ${isSelected ? 'text-white shadow-lg shadow-blue-500/30' : 'text-neutral-300'}
-          ${recommended && !isSelected ? 'ring-2 ring-blue-500/30' : ''}
+          ${isSelected ? 'text-neutral-900 shadow-lg shadow-[rgb(0,217,163)]/30' : 'text-neutral-300'}
+          ${recommended && !isSelected ? 'ring-2 ring-[rgb(0,217,163)]/30' : ''}
           ${disabled ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer active:scale-95'}
         `}
         style={{ minHeight: '44px' }}
