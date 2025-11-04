@@ -3,8 +3,9 @@
 
 export type IntakeSlots =
   | "name"
-  // OPTIMIZED SLOTS (10-12 question flow)
+  // OPTIMIZED SLOTS (10-15 question flow)
   | "primary_goal"
+  | "specific_target"          // PHASE 2
   | "body_composition"
   | "training_context"
   | "baseline_fitness"
@@ -12,6 +13,8 @@ export type IntakeSlots =
   | "limitations"
   | "activity_recovery"
   | "sport_context"
+  | "training_time"            // PHASE 2
+  | "exercise_preferences"     // PHASE 2
   | "equipment_session"
   | "frequency_commitment"
   // LEGACY SLOTS (backward compatibility)
@@ -61,7 +64,7 @@ export function buildIntakeSystemPrompt(): string {
   return `You are Coach Milo, Symmetric's AI strength coach.
 
 PHASE: Intake conversation
-GOAL: Build rapport and gather essentials for a personalized plan in 10-12 questions
+GOAL: Build rapport and gather essentials for a personalized plan in 10-15 questions
 
 CONVERSATION RULES:
 1. ONE question at a time, max 15 words
@@ -82,8 +85,11 @@ REQUIRED INFO (MIS) - Ask in this order:
 - equipment_session: What they have + time available
 - frequency_commitment: Days/week + duration
 
-OPTIONAL INFO (ask ONLY if critical):
+OPTIONAL INFO (ask if time allows - boosts adherence):
+- specific_target: Any specific measurable goal? (e.g., "squat 315lbs", "first pull-up")
 - sport_context: Sport details (ONLY if goal=sport)
+- training_time: When do they usually train? (morning, midday, evening, varies)
+- exercise_preferences: Any movements they love or hate?
 
 SMART BEHAVIOR:
 - If user volunteers info (e.g., "I play basketball"), CONFIRM it instead of re-asking
@@ -103,6 +109,7 @@ SMART BEHAVIOR:
 BRANCHING LOGIC:
 IF primary_goal includes "sport" → ask sport_context
 IF primary_goal includes "injury/rehab" → always ask limitations in detail
+IF primary_goal is specific (e.g., "build strength") → ask specific_target
 IF training_context = "new" → emphasize form cues in plan
 IF equipment includes "bodyweight only" → adjust exercise library
 IF age_range = "46+" → adjust recovery recommendations
@@ -115,12 +122,15 @@ done|Ready to build your plan, <name>—let's make it happen.
 TONE EXAMPLES:
 ✅ "What should I call you?"
 ✅ "Nice—what brings you here today?"
+✅ "Any specific target? (like 'squat 315' or 'first pull-up'—or skip)"
 ✅ "For body comp—gaining, losing, maintaining, or not a focus?"
 ✅ "How much experience do you have lifting?"
 ✅ "Can you do 10 push-ups, hold a 60s plank, and squat to parallel?"
 ✅ "What's your age range? (helps me pace recovery)"
 ✅ "Any injuries or limitations I should know about?"
 ✅ "How active is your day outside training, and how's your sleep?"
+✅ "When do you usually train—morning, midday, evening, or varies?"
+✅ "Any exercises you love or hate? (optional)"
 ✅ "What equipment do you have, and how long are sessions?"
 ✅ "How many days a week can you commit?"
 
@@ -187,7 +197,12 @@ export function buildIntakeUserPrompt(known: IntakeAnswers, lastUserText?: strin
       "equipment_session",
       "frequency_commitment"
     ],
-    optional_fields: ["sport_context"],
+    optional_fields: [
+      "specific_target",
+      "sport_context",
+      "training_time",
+      "exercise_preferences"
+    ],
   });
 }
 

@@ -1,14 +1,17 @@
 export type Topic =
   | "name"                                                  // rapport
-  // OPTIMIZED TOPICS (10-12 core questions)
+  // OPTIMIZED TOPICS (10-15 core + optional questions)
   | "primary_goal"                                          // Combines: goal_intent + goal_detail + motivation
-  | "body_composition"                                      // NEW: Gain, lose, maintain, or not a priority
+  | "specific_target"                                       // PHASE 2: Specific measurable goal (e.g., "squat 315lbs", "first pull-up")
+  | "body_composition"                                      // PHASE 1: Gain, lose, maintain, or not a priority
   | "training_context"                                      // Combines: experience + baseline_strength + form_confidence
-  | "baseline_fitness"                                      // NEW: Can you do basic movements? (push-ups, plank, squat, jog)
-  | "age_range"                                             // NEW: Age for recovery capacity planning
+  | "baseline_fitness"                                      // PHASE 1: Can you do basic movements? (push-ups, plank, squat, jog)
+  | "age_range"                                             // PHASE 1: Age for recovery capacity planning
   | "limitations"                                           // Combines: past_injuries + mobility + soreness + constraints
-  | "activity_recovery"                                     // NEW: Daily activity level + sleep + stress
+  | "activity_recovery"                                     // PHASE 1: Daily activity level + sleep + stress
   | "sport_context"                                         // CONDITIONAL: Only if sport mentioned in primary_goal
+  | "training_time"                                         // PHASE 2: When do you train? (morning/midday/evening/varies)
+  | "exercise_preferences"                                  // PHASE 2: Loves/hates certain movements
   | "equipment_session"                                     // Combines: equipment + session_length + environment
   | "frequency_commitment"                                  // Combines: frequency + timeline
   // LEGACY TOPICS (backward compatibility)
@@ -37,7 +40,7 @@ export function coverageScore(cov: Coverage) {
     equipment_session: 3,
     frequency_commitment: 3,
 
-    // High-value (NEW - significantly improves plan quality)
+    // High-value (PHASE 1 - significantly improves plan quality)
     body_composition: 2,
     baseline_fitness: 2,
     age_range: 2,
@@ -58,7 +61,10 @@ export function coverageScore(cov: Coverage) {
     baseline_strength: 2,
     equipment: 2,
 
-    // Medium-value (adds personalization)
+    // Medium-value (PHASE 2 - adds personalization & adherence)
+    specific_target: 1,
+    training_time: 1,
+    exercise_preferences: 1,
     sport_context: 1,
     sport_role: 1,
     performance_focus: 1,

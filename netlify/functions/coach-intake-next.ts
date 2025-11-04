@@ -434,14 +434,15 @@ function buildPlanContext(answers: Record<string, any>, fallback: WrapTurn) {
     // Core identity
     name: typeof answers.name === "string" ? answers.name.trim() : "",
 
-    // Goals (NEW + LEGACY support)
+    // Goals (PHASE 1 & 2 + LEGACY support)
     primary_goal: answers.primary_goal ?? null,
+    specific_target: answers.specific_target ?? null,              // PHASE 2
     body_composition: answers.body_composition ?? null,
     goal_intent: answers.goal_intent ?? null,
     motivation: answers.motivation ?? null,
     timeline: answers.timeline ?? null,
 
-    // Current state (NEW fields)
+    // Current state (PHASE 1 fields)
     training_context: answers.training_context ?? null,
     baseline_fitness: answers.baseline_fitness ?? null,
     age_range: answers.age_range ?? null,
@@ -451,7 +452,7 @@ function buildPlanContext(answers: Record<string, any>, fallback: WrapTurn) {
     constraints: answers.constraints ?? null,
     past_injuries: answers.past_injuries ?? null,
 
-    // Recovery & activity (NEW field)
+    // Recovery & activity (PHASE 1 field)
     activity_recovery: answers.activity_recovery ?? null,
 
     // Equipment & environment
@@ -463,8 +464,9 @@ function buildPlanContext(answers: Record<string, any>, fallback: WrapTurn) {
     experience_level: answers.experience_level ?? null,
     confidence: answers.form_confidence ?? null,
 
-    // Schedule
+    // Schedule & timing (PHASE 2)
     frequency_commitment: answers.frequency_commitment ?? null,
+    training_time: answers.training_time ?? null,                  // PHASE 2
     schedule: {
       days_per_week: fallback.plan_summary.days_per_week,
       session_length_min: fallback.plan_summary.session_length_min,
@@ -474,7 +476,8 @@ function buildPlanContext(answers: Record<string, any>, fallback: WrapTurn) {
     // Sport context (CONDITIONAL)
     sport_context: answers.sport_context ?? null,
 
-    // Preferences
+    // Preferences (PHASE 2)
+    exercise_preferences: answers.exercise_preferences ?? null,    // PHASE 2
     preferences: answers.preferences ?? null,
     program_style: answers.program_style ?? null,
 
@@ -505,12 +508,17 @@ async function generateWrapWithGemini(answers: Record<string, any>, fallback: Wr
     "- Goal must be one of the allowed enum values.",
     "- Stay upbeat, precise, and avoid marketing fluff.",
     "",
-    "KEY PERSONALIZATION FACTORS:",
+    "KEY PERSONALIZATION FACTORS (PHASE 1):",
     "- Body Composition: If 'gain', emphasize volume and progressive overload. If 'lose', balance intensity with recovery. If 'maintain/recomp', focus on strength gains.",
     "- Baseline Fitness: If user struggles with basic movements, start with foundational progressions and movement prep.",
     "- Age Range: For 46+, emphasize recovery time, joint-friendly variations, and longer deload cycles.",
     "- Activity & Recovery: If high stress or poor sleep (<6hrs), reduce volume by 20-30% and add extra rest.",
     "- Limitations: Always protect flagged areas with modified ROM, exercise substitutions, or controlled tempos.",
+    "",
+    "PHASE 2 PERSONALIZATION (if available):",
+    "- Specific Target: If user has a measurable goal (e.g., 'squat 315lbs'), reverse-engineer periodization to peak at that target. Build progressive overload cycles that lead to the specific lift.",
+    "- Training Time: If 'morning', place CNS-demanding work early when fresh. If 'evening', consider fatigue from work day. If 'varies', use autoregulation.",
+    "- Exercise Preferences: If user loves certain movements, program them frequently. If user hates certain movements, substitute with similar stimulus. Never force hated movements—adherence > perfection.",
     "",
     "Intake answers:",
     JSON.stringify(context, null, 2),
