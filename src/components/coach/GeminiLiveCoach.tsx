@@ -92,7 +92,7 @@ export const GeminiLiveCoach: React.FC<GeminiLiveCoachProps> = ({ open, onClose 
     },
     processing: {
       title: 'Coach is thinking…',
-      subtitle: 'Stay put — Milo is weaving your readiness, symmetry, and sets into a plan.',
+      subtitle: 'Analyzing your data...',
     },
     speaking: {
       title: 'Coach is speaking',
