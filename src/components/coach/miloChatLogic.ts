@@ -339,53 +339,97 @@ function isFiniteNumber(value: unknown): value is number {
 
 export function nextMicrocopy(id: QuestionId, value: unknown, a: Answers) {
   const name = a.name?.split(" ")[0] || "friend";
+
+  // Add variation by picking randomly from response options
+  const pick = (options: string[]) => options[Math.floor(Math.random() * options.length)];
+
   switch (id) {
     case "name":
-      return `Great to meet you, ${name}!`;
+      return pick([
+        `Great to meet you, ${name}!`,
+        `Hey ${name}, stoked to work with you!`,
+        `${name}—awesome, let's get after it!`,
+      ]);
     case "primary_goal":
-      return `Dialed — we'll anchor on ${String(value ?? "your goal")}.`;
+      return pick([
+        `Love it—${String(value ?? "your goal")} is a great focus.`,
+        `Perfect, we'll build everything around ${String(value ?? "that")}.`,
+        `${String(value ?? "That goal")}—I can work with that. Let's do it.`,
+      ]);
     case "training_context":
-      if (value === "new") return "No rush — we'll groove the movement pattern.";
-      if (value === "some_experience") return "Solid base — we can ramp with control.";
-      if (value === "solid_lifter") return "Nice — we'll stack quality volume.";
-      if (value === "very_experienced") return "Love it — precision loading unlocked.";
-      return "Got it — I'll match the intensity.";
-    case "body_composition":
-      return `Noted — we'll steer cues toward ${String(value ?? "that focus")}.`;
-    case "activity_recovery":
-      return "Logged — that helps me modulate recovery blocks.";
-    case "specific_target":
-      return "Perfect — we'll reverse-engineer that milestone.";
-    case "training_time":
-      return "Great — I'll time heavy work when your energy peaks.";
-    case "exercise_preferences":
-      return "Locked — we’ll keep momentum with movements you enjoy.";
+      if (value === "new") return pick([
+        "No rush—we'll nail the basics first.",
+        "All good—everyone starts somewhere. We'll build a solid foundation.",
+        "Perfect, we'll take our time and get the movement patterns right.",
+      ]);
+      if (value === "some_experience") return pick([
+        "Nice—you've got a base to build on.",
+        "Solid. We can ramp things up with some structure.",
+        "Cool, I'll meet you where you're at and push from there.",
+      ]);
+      if (value === "solid_lifter") return pick([
+        "Hell yeah—we'll stack some quality volume.",
+        "Love it. Time to dial in the details and keep progressing.",
+        "Nice! We'll get strategic with your programming.",
+      ]);
+      if (value === "very_experienced") return pick([
+        "Respect. We'll get precise with the loading.",
+        "Perfect—time for some advanced periodization.",
+        "Love working with experienced lifters. Let's optimize this.",
+      ]);
+      return "Got it—I'll match the intensity.";
     case "limitations":
-      if (Array.isArray(value) && value.includes("none")) return "Perfect — we'll push confidently.";
-      return "Noted — I'll keep joints smiling.";
+      if (Array.isArray(value) && value.includes("none")) return pick([
+        "Awesome—we can push confidently.",
+        "Perfect, no limitations means more options.",
+        "Great—that opens up a lot of movement choices.",
+      ]);
+      return pick([
+        "Noted—I'll keep those joints safe.",
+        "Got it. We'll work around that smartly.",
+        "Copy that—protecting those areas is priority one.",
+      ]);
     case "sport_context":
-      return "Game plan incoming — tailoring to that sport.";
+      return pick([
+        `${String(value ?? "That sport")}—nice, I'll tailor everything for that.`,
+        "Perfect, I'll program with sport-specific transfer in mind.",
+        "Got it—we'll build strength that translates to the field.",
+      ]);
     case "equipment_session":
-      return "Setup saved — I'll pace sessions around it.";
+      return pick([
+        "Setup locked in—I'll design around what you've got.",
+        "Perfect, I'll pace sessions to fit that time.",
+        "Got it—working with your equipment and schedule.",
+      ]);
     case "frequency_commitment":
-      return `Locked — ${resolveFrequencyCommitment(a)?.days_per_week ?? "your"}x/week it is.`;
+      return pick([
+        `${resolveFrequencyCommitment(a)?.days_per_week ?? "Your frequency"}x/week—I'll manage recovery around that.`,
+        "Locked in. I'll distribute volume across those sessions.",
+        "Perfect, I can work with that schedule.",
+      ]);
     case "body_metrics":
-      return "Thanks — those numbers help me calibrate load.";
+      return pick([
+        "Thanks—those numbers help me dial in the loads.",
+        "Got it. I'll use those to calibrate intensity.",
+        "Perfect, that helps me personalize the programming.",
+      ]);
     case "equipment":
-      return "Got it — building your pool now.";
-    case "session_length":
-      return `${value} minutes — I’ll pace the blocks.`;
-    case "frequency":
-      return `${value}×/week — I’ll manage fatigue around that.`;
-    case "constraints":
-      return Array.isArray(value) && value.includes("knees")
-        ? "Knees noted — angles stay friendly."
-        : "Copy — we’ll keep joints happy.";
+      return pick([
+        "Got it—building your exercise pool now.",
+        "Perfect, I'll work with what you've got.",
+      ]);
     case "goal_intent":
     case "goal":
-      return "Goal captured — let's build around it.";
+      return pick([
+        "Goal locked—let's build around it.",
+        "Perfect, everything will ladder up to that.",
+      ]);
     default:
-      return `Noted, ${name}.`;
+      return pick([
+        `Noted, ${name}.`,
+        "Got it.",
+        "Copy that.",
+      ]);
   }
 }
 
@@ -568,8 +612,31 @@ export function tryParseUserAnswer(id: QuestionId, raw: string) {
   if (!s) return null;
 
   switch (id) {
-    case "name":
-      return { value: s, label: s } as const;
+    case "name": {
+      // Extract name from conversational patterns like "Hey I'm akash" or "My name is alex"
+      const patterns = [
+        /(?:hey |hi |hello )?(?:i'm |im |i am |my name is |call me |it's |its )([a-z]+)/i,
+        /^([a-z]+)(?:\s+here)?$/i, // Just "akash" or "akash here"
+      ];
+      for (const pattern of patterns) {
+        const match = s.match(pattern);
+        if (match?.[1]) {
+          const name = match[1].trim();
+          // Capitalize first letter
+          const capitalized = name.charAt(0).toUpperCase() + name.slice(1).toLowerCase();
+          return { value: capitalized, label: capitalized } as const;
+        }
+      }
+      // Fallback: use as-is if it looks like a name (single word, capitalized)
+      if (/^[A-Z][a-z]+$/.test(s)) {
+        return { value: s, label: s } as const;
+      }
+      // Last resort: capitalize and use it
+      const capitalized = s.split(' ').map(word =>
+        word.charAt(0).toUpperCase() + word.slice(1).toLowerCase()
+      ).join(' ');
+      return { value: capitalized, label: capitalized } as const;
+    }
     case "primary_goal":
       return parsePrimaryGoal(s);
     case "training_context":

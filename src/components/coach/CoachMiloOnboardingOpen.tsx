@@ -15,6 +15,7 @@ import IntakeProgressIndicator from "./IntakeProgressIndicator";
 import EnhancedTypingIndicator from "./EnhancedTypingIndicator";
 import AnswerSummaryPanel from "./AnswerSummaryPanel";
 import EnhancedChip from "./EnhancedChip";
+import { callGeminiForIntake } from "./miloIntakeGemini";
 
 type CoachTurnMessage = {
   who: "milo";
@@ -50,17 +51,8 @@ type Message = CoachTurnMessage | CoachNegotiationMessage | CoachWrapMessage | C
 
 type ActiveAsk =
   | { kind: "turn"; topic: Topic; question: string; chips: string[] }
-  | { kind: "negotiation"; question: string; chips: string[] }
+  | { kind: "negotiation"; topic?: Topic; question: string; chips: string[] }
   | { kind: "final_check"; question: string; chips: string[] };
-
-type IntakeRequestPayload = {
-  answers: Record<string, any>;
-  coverage: Record<string, boolean>;
-  user_name?: string;
-  branch?: "athlete" | "lifestyle" | "auto";
-  last_user_text?: string;
-  recent_topics?: string[];
-};
 
 const PERSONA_TOPIC_KEYS = Object.keys(PERSONA_LINES).filter(
   (key): key is Topic => key !== "default"
@@ -337,44 +329,9 @@ const buildPlanNarrative = (wrap: WrapTurn, note: string | null | undefined): Pl
   };
 };
 
-function buildIntakeEndpoints(): string[] {
-  if (typeof window === "undefined") {
-    return ["/.netlify/functions/coach-intake-next"];
-  }
-
-  const endpoints = new Set<string>();
-  const { hostname, port, protocol } = window.location;
-
-  endpoints.add("/.netlify/functions/coach-intake-next");
-
-  if (hostname === "localhost" || hostname === "127.0.0.1") {
-    const localPort = port || "8888";
-    endpoints.add(`${protocol}//${hostname}:${localPort}/.netlify/functions/coach-intake-next`);
-  }
-
-  if (port === "8888") {
-    endpoints.add(`${protocol}//${hostname}:8888/.netlify/functions/coach-intake-next`);
-  }
-
-  if (hostname.endsWith(".netlify.app")) {
-    endpoints.add("/.netlify/functions/coach-intake-next");
-  }
-
-  return Array.from(endpoints);
-}
 
 function isTopic(value: string): value is Topic {
   return TOPIC_SET.has(value as Topic);
-}
-
-function toCoverageRecord(source: Partial<Record<Topic, boolean>>): Record<string, boolean> {
-  const record: Record<string, boolean> = {};
-  for (const topic of TOPIC_KEYS) {
-    if (source[topic]) {
-      record[topic] = true;
-    }
-  }
-  return record;
 }
 
 const Bubble: React.FC<{ who: "milo" | "you"; children: React.ReactNode }> = ({ who, children }) => {
@@ -572,12 +529,6 @@ export default function CoachMiloOnboardingOpen({ onComplete }: { onComplete: ()
   const handleAction = useCallback(
     (action: NextAction) => {
       if (action.action === "turn") {
-        // Add contextual transition before the question
-        const transition = generateTransition(action.turn.topic, answersRef.current);
-        if (transition) {
-          appendMessage({ who: "milo", kind: "text", text: transition });
-        }
-
         appendMessage({ who: "milo", kind: "turn", turn: action.turn });
         setActiveAsk({
           kind: "turn",
@@ -593,8 +544,11 @@ export default function CoachMiloOnboardingOpen({ onComplete }: { onComplete: ()
 
       if (action.action === "negotiation") {
         appendMessage({ who: "milo", kind: "negotiation", negotiation: action.negotiation });
+        // Preserve the current topic so answers after negotiation get saved correctly
+        const currentTopic = activeAsk?.kind === "turn" ? activeAsk.topic : undefined;
         setActiveAsk({
           kind: "negotiation",
+          topic: currentTopic,
           question: action.negotiation.question,
           chips: action.negotiation.chips ?? [],
         });
@@ -611,6 +565,22 @@ export default function CoachMiloOnboardingOpen({ onComplete }: { onComplete: ()
         loadingTimeoutRef.current = null;
       }
       setShowPlanLoading(false);
+
+      // Generate acknowledgment for the last answer before final check
+      const answers = answersRef.current;
+      const name = answers.name ? answers.name.split(" ")[0] : "friend";
+      const acknowledgments = [
+        `Perfect, ${name}—I've got everything I need.`,
+        `Got it, ${name}. Let me pull this all together.`,
+        `Awesome, ${name}. I have a clear picture now.`,
+      ];
+      const randomAck = acknowledgments[Math.floor(Math.random() * acknowledgments.length)];
+
+      appendMessage({
+        who: "milo",
+        kind: "text",
+        text: randomAck,
+      });
       appendMessage({
         who: "milo",
         kind: "text",
@@ -643,54 +613,32 @@ export default function CoachMiloOnboardingOpen({ onComplete }: { onComplete: ()
 
       try {
         const currentAnswers = updatedAnswers ?? answersRef.current;
-
         const branch = resolveIntakeBranch("auto", currentAnswers);
+        const scripted = scriptedNextAction(currentAnswers, branch);
 
-        const payload: IntakeRequestPayload = {
-          answers: currentAnswers,
-          coverage: toCoverageRecord(coverageRef.current),
-          user_name: typeof currentAnswers.name === "string" ? currentAnswers.name : undefined,
-          branch,
-          last_user_text: lastUserText,
-          recent_topics: recentTopicsRef.current.slice(-3),
-        };
-
-        const endpoints = buildIntakeEndpoints();
-        console.log("[coach-intake] Trying endpoints:", endpoints);
         let nextAction: NextAction | null = null;
 
-        for (const endpoint of endpoints) {
-          try {
-            console.log("[coach-intake] Fetching from:", endpoint);
-            const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 2000); // 2s timeout
+        // Only try Gemini if we have a turn to enhance (not wrap)
+        if (scripted.action === "turn") {
+          console.log("[coach-intake] Trying Gemini for topic:", scripted.turn.topic);
+          nextAction = await callGeminiForIntake({
+            answers: currentAnswers,
+            nextTopic: scripted.turn.topic,
+            userName: typeof currentAnswers.name === "string" ? currentAnswers.name : undefined,
+            lastUserText,
+            chips: scripted.turn.chips,
+          });
 
-            const response = await fetch(endpoint, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify(payload),
-              signal: controller.signal,
-            });
-
-            clearTimeout(timeoutId);
-            console.log("[coach-intake] Response status:", response.status);
-
-            if (!response.ok) {
-              continue;
-            }
-
-            nextAction = (await response.json()) as NextAction;
-            console.log("[coach-intake] Got nextAction from endpoint");
-            break;
-          } catch (error) {
-            console.warn("[coach-intake] request failed:", endpoint, error);
+          if (nextAction) {
+            console.log("[coach-intake] Got Gemini response");
+          } else {
+            console.log("[coach-intake] Gemini failed, using scripted fallback");
           }
         }
 
+        // Fallback to scripted flow
         if (!nextAction) {
-          // Fallback to scripted flow when functions are unavailable (e.g., npm run dev without netlify dev)
-          console.log("[coach-intake] Using local scripted fallback");
-          nextAction = scriptedNextAction(currentAnswers, branch);
+          nextAction = scripted;
         }
 
         if (!nextAction) {
@@ -736,8 +684,24 @@ export default function CoachMiloOnboardingOpen({ onComplete }: { onComplete: ()
 
       appendMessage({ who: "you", kind: "text", text: trimmed });
 
+      // Detect if user is asking a question or pushing back rather than answering
+      const isQuestion = /^(why|what|how|when|where|who|can you|could you|should i|do i|is it|tell me|explain)/i.test(trimmed) ||
+                        (trimmed.includes('?') && trimmed.length > 3); // Ignore single "?" as valid answer
+      const isPushback = /^(idk|i don'?t know|why should|don'?t care|tell me if|is .+ enough)/i.test(trimmed.toLowerCase());
+      const requiresNegotiation = isQuestion || isPushback;
+
+      if (requiresNegotiation) {
+        // User is engaging conversationally, not answering - trigger negotiation
+        setActiveAsk(null);
+        await fetchNext(trimmed, answersRef.current);
+        return;
+      }
+
       let topicKey: Topic | undefined;
       if (activeAsk.kind === "turn" && isTopic(activeAsk.topic)) {
+        topicKey = activeAsk.topic;
+      } else if (activeAsk.kind === "negotiation" && activeAsk.topic && isTopic(activeAsk.topic)) {
+        // Preserve topic from negotiation so answer gets saved
         topicKey = activeAsk.topic;
       }
 

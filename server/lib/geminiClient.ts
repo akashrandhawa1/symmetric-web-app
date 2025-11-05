@@ -10,9 +10,9 @@ function assertServer() {
 
 export function getAI(): GoogleGenAI {
   assertServer();
-  const apiKey = process.env.GEMINI_API_KEY;
+  const apiKey = process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY;
   if (!apiKey) {
-    throw new Error('GEMINI_API_KEY is missing');
+    throw new Error('GEMINI_API_KEY or VITE_GEMINI_API_KEY is missing');
   }
   if (!ai) {
     ai = new GoogleGenAI({ apiKey });

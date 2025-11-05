@@ -4,9 +4,11 @@
   functions = "netlify/functions"
 
 [dev]
-  command = "npm run dev"
+  command = "npm run dev:vite-only"
+  framework = "#custom"
   targetPort = 3000
   port = 8888
+  autoLaunch = false
 
 # Note: VITE_GEMINI_API_KEY must be set in Netlify Dashboard
 # Go to: Site Configuration > Environment Variables

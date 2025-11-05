@@ -220,52 +220,59 @@ export const resolveIntakeBranch = (branch: string | undefined, answers: Record<
 
 export const scriptedNextAction = (answers: Record<string, any>, branch: IntakeBranch): NextAction => {
   const name = typeof answers.name === "string" ? answers.name.trim() : "";
+  const firstName = name.split(" ")[0];
+
   if (!name) {
-    return createTurn("name", "What should I call you?", []);
+    return createTurn("name", "Hey! I'm Coach Milo. What should I call you?", []);
   }
 
   const goal = normalisePrimaryGoal(answers);
   if (!hasValue(answers.primary_goal ?? answers.goal_intent)) {
     return createTurn(
       "primary_goal",
-      `${name.split(" ")[0]}, what’s the main focus—strength, muscle, sport, rehab, or general fitness?`
+      `Great to meet you, ${firstName}! What's bringing you here—building strength, adding muscle, training for a sport, recovering from something, or just general fitness?`
     );
   }
 
   if (!hasValue(getTrainingContext(answers))) {
+    const goalContext = goal === "rehab"
+      ? "Before the injury, how"
+      : goal === "sport"
+      ? "For your sport, how"
+      : "How";
     return createTurn(
       "training_context",
-      "How would you describe your lifting experience—new, some experience, solid, or very experienced?"
+      `${goalContext} much lifting experience do you have? Are you brand new, have some time under the bar, pretty experienced, or been at it for years?`
     );
   }
 
   if (!hasValue(getEquipmentSession(answers))) {
     return createTurn(
       "equipment_session",
-      "What equipment do you have ready, and how long can each session run?"
+      "Got it. What equipment do you have access to, and how much time can you realistically give each session?"
     );
   }
 
   if (!hasValue(getFrequencyCommitment(answers))) {
     return createTurn(
       "frequency_commitment",
-      "How many days per week can you train, and for how many weeks?"
+      "How many days per week can you commit to training? And are we working toward a specific timeline or event?"
     );
   }
 
   if (!hasValue(getBodyMetrics(answers))) {
     return createTurn(
       "body_metrics",
-      "Quick stats—age, height (feet/inches), and current weight in pounds?"
+      "Quick body stats for programming—what's your age, height (feet and inches), and current weight in pounds?"
     );
   }
 
   if (requiresLimitations(goal) && !hasValue(answers.limitations ?? answers.constraints)) {
-    return createTurn("limitations", "Any injuries or joints I should protect?", CHIPS_BY_TOPIC.limitations);
+    return createTurn("limitations", "Any injuries, joint issues, or movement constraints I should know about to keep you safe?", CHIPS_BY_TOPIC.limitations);
   }
 
   if (requiresSportContext(goal) && !hasValue(answers.sport_context)) {
-    return createTurn("sport_context", "Which sport or position should I tailor this around?", CHIPS_BY_TOPIC.sport_context);
+    return createTurn("sport_context", "Which sport are you training for? And what position or role, if that matters?", CHIPS_BY_TOPIC.sport_context);
   }
 
   if (!hasValue(answers.body_composition)) {

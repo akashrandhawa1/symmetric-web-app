@@ -40,31 +40,53 @@ type IntakeRequest = {
 type CacheEntry = { action: NextAction; expiresAt: number };
 
 const SYSTEM_PROMPT = [
-  "You are Coach Milo 🐺, a warm, professional strength coach guiding FIRST-TIME intake.",
-  "The server decides the next topic. NEVER change topics or chips.",
-  "Every response must be STRICT JSON using one of the allowed shapes.",
+  "You are Coach Milo 🐺, a warm, experienced strength coach having a genuine conversation to understand this person's training context.",
+  "Every response must be valid JSON using one of the allowed shapes below.",
   "",
-  "Rules:",
-  "- Follow the 7-question blueprint: name → primary_goal → training_context → equipment_session → frequency_commitment → body_metrics → context follow-up (limitations or sport_context).",
-  "- Persona line ≤12 words explaining why the topic matters.",
-  "- Provide SCC each turn: Suggest ≤8 words, Confirm ≤6 words, Compensate is principle-only.",
-  "- Ask exactly one question ≤18 words, one sentence, question must come last.",
-  "- When collecting body_metrics demand exact numbers (age, feet/inches, pounds).",
-  "- NEVER prescribe exercises, sets, reps, %1RM, RPE, rest, kg, or lb loads.",
-  "- NEVER ask for coach vibe or tone (the server controls it).",
-  "- If chips are provided, reference that quick taps are available.",
-  "- Use the provided phase context to keep the conversation tight.",
-  "- If you cannot comply, return an empty JSON object {} and the server will fall back.",
+  "Conversational principles:",
+  "- Always acknowledge what they specifically said before moving forward (reference their actual words, not generic confirmations)",
+  "- Show genuine curiosity about their training journey",
+  "- Ask follow-up questions when their answer is interesting, vague, or reveals something important",
+  "- If they ask a question (why, what, how) or push back ('why should I care', 'idk', 'not sure'), ADDRESS IT DIRECTLY before continuing",
+  "  • Example: User says 'why should i care about this?' → Answer their question, then gently guide back to the topic",
+  "  • Example: User says 'idk' or 'not sure' → Acknowledge uncertainty, provide context, offer to skip or come back to it",
+  "  • Example: User asks 'what does this have to do with training?' → Explain the connection, then continue",
+  "- Keep responses natural and conversational (not formulaic or robotic)",
+  "- Use their name occasionally for warmth, but don't overdo it",
+  "- If they mention something specific (injury, sport, time constraint, equipment gap), explore it briefly",
+  "- Vary your language and phrasing—don't sound like you're reading from a script",
+  "",
+  "Coverage goals (cover these naturally through conversation, don't recite them):",
+  "- Name and what to call them",
+  "- Primary goal (strength, muscle, sport performance, rehab, general fitness)",
+  "- Training experience level and confidence with form",
+  "- Available equipment and typical session length",
+  "- Training frequency and schedule commitment",
+  "- Body metrics (age, height, weight) for programming",
+  "- Any limitations (injuries, mobility issues, time/equipment constraints)",
+  "- Sport context if relevant to their goal",
+  "",
+  "Response guidelines:",
+  "- Persona line: Briefly explain why understanding this topic helps you coach them better (be specific to what they said)",
+  "- SCC (Suggest/Confirm/Compensate): Acknowledge their answer with coaching insight, not generic confirmations",
+  "  • Suggest: Why their answer helps guide the plan (reference specifics)",
+  "  • Confirm: Affirm their choice works",
+  "  • Compensate: If there's a constraint, explain how you'll work with it",
+  "- Question: Ask naturally, not like filling out a form. Can be 1-2 sentences if needed for clarity.",
+  "- When collecting body_metrics, ask for specific numbers (age, height in feet/inches, weight in pounds)",
+  "- NEVER prescribe specific exercises, sets, reps, %1RM, RPE, rest intervals, or exact loads (kg/lb)",
+  "- If chips are provided, you can casually mention quick-tap options are available",
+  "- If you cannot comply, return an empty JSON object {} and the server will fall back to scripted flow",
   "",
   "JSON shapes:",
-  '{"persona_line":"...","scc":{"suggest":"...","confirm":"...","compensate":"..."},"question":"...","topic":"exact next_topic","chips":[...]}',
-  '{"coach_take":"...","question":"...","chips":[...]}',
-  '{"coach_intro":"...","plan_summary":{"goal":"lower-body strength|muscle|general|rehab","weeks":number,"days_per_week":number,"session_length_min":number,"constraints_notes":"...","blocks":[{"name":"...","objective":"..."}...]}}',
+  '{"persona_line":"...","scc":{"suggest":"...","confirm":"...","compensate":"..."},"question":"...","topic":"exact next_topic","chips":[...]}  ← Use for normal intake questions',
+  '{"coach_take":"...","question":"...","chips":[...]}  ← Use when user asks a question or pushes back (address their concern in coach_take, then ask to continue)',
+  '{"coach_intro":"...","plan_summary":{"goal":"lower-body strength|muscle|general|rehab","weeks":number,"days_per_week":number,"session_length_min":number,"constraints_notes":"...","blocks":[{"name":"...","objective":"..."}...]}}  ← Use only for final plan wrap',
   "",
-  "Persona line guidance per topic:",
+  "Topic examples (use these as inspiration, not templates):",
   JSON.stringify(PERSONA_LINES),
   "",
-  "SCC seed ideas (paraphrase ok):",
+  "SCC inspiration (paraphrase and personalize based on their specific answer):",
   JSON.stringify(SCC_SEEDS),
 ].join("\n");
 
@@ -102,10 +124,36 @@ function buildModelInput(params: {
   recentTopics: string[];
 }): string {
   const { answers, nextTopic, branch, userName, vibeHint, lastUserText, chips, recentTopics } = params;
+
+  // Build conversation context summary from answers
+  const conversationContext: string[] = [];
+  if (answers.name) conversationContext.push(`Their name: ${answers.name}`);
+  if (answers.primary_goal || answers.goal_intent) {
+    conversationContext.push(`Goal: ${answers.primary_goal || answers.goal_intent}`);
+  }
+  if (answers.training_context || answers.experience_level) {
+    conversationContext.push(`Experience: ${answers.training_context || answers.experience_level}`);
+  }
+  if (answers.equipment_session || answers.equipment) {
+    conversationContext.push(`Equipment/Session: ${answers.equipment_session || answers.equipment}`);
+  }
+  if (answers.frequency_commitment || answers.frequency) {
+    conversationContext.push(`Frequency: ${answers.frequency_commitment || answers.frequency}`);
+  }
+  if (answers.limitations || answers.constraints) {
+    conversationContext.push(`Limitations: ${answers.limitations || answers.constraints}`);
+  }
+  if (answers.sport_context) {
+    conversationContext.push(`Sport context: ${answers.sport_context}`);
+  }
+
   return JSON.stringify({
     user_name: userName ?? "",
     vibe_hint: vibeHint ?? "auto",
     known_answers: answers ?? {},
+    conversation_so_far: conversationContext.length > 0
+      ? `What you know about them:\n${conversationContext.join('\n')}\n\nUse this context to ask personalized questions and make relevant connections.`
+      : "",
     next_topic: nextTopic,
     branch,
     last_user_text: lastUserText ?? "",
@@ -307,8 +355,8 @@ async function callGemini(modelInput: string): Promise<GeminiCallResult> {
           contents: [{ role: "user", parts: [{ text: modelInput }] }],
           systemInstruction: { role: "system", parts: [{ text: SYSTEM_PROMPT }] },
           config: {
-            temperature: 0.55,
-            maxOutputTokens: 320,
+            temperature: 0.85,
+            maxOutputTokens: 400,
             responseMimeType: "application/json",
             abortSignal: controller.signal,
           },
@@ -328,8 +376,13 @@ async function callGemini(modelInput: string): Promise<GeminiCallResult> {
         } catch (error) {
           throw new Error(`Gemini returned non-JSON payload: ${cleaned.slice(0, 160)}`);
         }
+
+        // Debug logging to see what Gemini actually returned
+        console.log("[coach-intake-next] DEBUG: Gemini raw response:", JSON.stringify(parsed, null, 2));
+
         const action = coerceNextAction(parsed);
         if (!action) {
+          console.error("[coach-intake-next] DEBUG: coerceNextAction failed. Parsed payload:", JSON.stringify(parsed, null, 2));
           throw new Error("Gemini returned unexpected payload shape");
         }
 
@@ -543,8 +596,8 @@ async function generateWrapWithGemini(answers: Record<string, any>, fallback: Wr
       model: "gemini-2.0-flash-exp",
       contents: [{ role: "user", parts: [{ text: instructions }] }],
       config: {
-        temperature: 0.45,
-        maxOutputTokens: 320,
+        temperature: 0.75,
+        maxOutputTokens: 400,
         responseMimeType: "application/json",
       },
     });
@@ -640,6 +693,11 @@ export const handler: Handler = async (event) => {
   const score = coverageScore(mergedCoverage);
   const coverageMet = hasOperationalMinimum(answers) && score >= COVERAGE_TARGET;
 
+  // Detect if user is asking a question or pushing back (requires LLM negotiation)
+  const isQuestion = /^(why|what|how|when|where|who|can you|could you|should i|do i|is it|tell me|explain)/i.test(lastUserText) || lastUserText.includes('?');
+  const isPushback = /^(idk|i don't know|i dont know|not sure|maybe|skip|pass|why should|don't care|dont care)/i.test(lastUserText.toLowerCase());
+  const requiresNegotiation = (isQuestion || isPushback) && lastUserText.length > 0;
+
   const scripted = scriptedNextAction(answers, branch);
 
   if (scripted.action === "wrap" || coverageMet) {
@@ -690,19 +748,44 @@ export const handler: Handler = async (event) => {
     const turnTopic = geminiResult.action.turn.topic;
     if (turnTopic !== nextTopic) {
       console.warn("[coach-intake-next] Gemini topic mismatch", { expected: nextTopic, got: turnTopic });
-      action = scripted;
-      modelId = "scripted";
+      action = requiresNegotiation ? geminiResult.action : scripted; // Use LLM response if negotiation needed
+      modelId = requiresNegotiation ? (geminiResult.model ?? "gemini") : "scripted";
     } else {
       action = geminiResult.action;
     }
   } else if (geminiResult.action) {
     action = geminiResult.action;
   } else {
-    action =
-      geminiResult.capacity || Date.now() - capacityNoticeAt < CAPACITY_RESET_MS
-        ? applyCapacityNotice(scripted)
-        : scripted;
-    modelId = "scripted";
+    // If LLM failed but user needs negotiation, create an intelligent acknowledgment
+    if (requiresNegotiation) {
+      const topicExplanations: Record<string, string> = {
+        primary_goal: "Great question! Your goal determines everything—rep ranges, rest times, exercise selection. Building max strength needs heavy sets of 3-5 reps with long rest. Muscle building uses 8-12 reps with shorter rest. Sport training depends on your sport's demands. I need to know what you're chasing so I don't waste your time with the wrong approach.",
+        training_context: "Good question! Your experience level changes how I program. If you're new, I'll focus on teaching movement patterns safely—light weight, perfect form, building confidence. If you've been lifting for years, we can use advanced techniques like RPE, auto-regulation, and higher intensities. I won't make a beginner do advanced periodization, and I won't bore an experienced lifter with basics.",
+        equipment_session: "Totally fair to ask! Equipment determines what exercises I can program. A barbell opens up squats, deadlifts, bench press—the backbone of strength training. Dumbbells mean we adjust rep schemes and unilateral work. Bodyweight only means I need to get creative with progressions. Session length determines how much volume I can fit. I'm asking because I need to build a plan that fits what you actually have access to.",
+        frequency_commitment: "Good question! Frequency determines how I distribute volume. Training 3x/week means full-body sessions. 4-5x/week lets us split upper/lower or push/pull. 6x/week means I can dedicate days to specific movements. Timeline matters because if you've got a competition in 8 weeks, we peak differently than if you're training for general strength over 6 months.",
+        body_metrics: "Fair question! Body stats help me calibrate starting loads and give better form cues. Age affects recovery capacity. Height affects lever lengths—taller people need different cues for squats. Weight gives me a rough idea of where to start with loading recommendations. These aren't required, but they help me be more accurate instead of shooting in the dark.",
+        limitations: "Smart question! I need to know what to protect. Got bad knees? I'll avoid deep lunges and modify squat depth. Shoulder issues? I'll skip overhead work until we rehab. Lower back problems? Deadlifts get adjusted. If I don't know your weak points, I might program something that hurts you. Rather know upfront.",
+        sport_context: "Great question! Sport context changes the whole plan. Training for powerlifting means max strength on the big 3. Training for basketball means I'm adding explosive movements and conditioning. If you're rehabbing from soccer injuries, I'll emphasize unilateral stability work. Generic strength training doesn't transfer as well as sport-specific work.",
+      };
+
+      const explanation = topicExplanations[nextTopic] ?? `I hear you. Let me explain why this helps—knowing your ${nextTopic.replace(/_/g, ' ')} lets me build a plan that actually works for you, not just a generic template.`;
+
+      action = {
+        action: "negotiation",
+        negotiation: {
+          coach_take: explanation,
+          question: scripted.turn.question,
+          chips: scripted.turn.chips ?? [],
+        },
+      };
+      modelId = "fallback-negotiation";
+    } else {
+      action =
+        geminiResult.capacity || Date.now() - capacityNoticeAt < CAPACITY_RESET_MS
+          ? applyCapacityNotice(scripted)
+          : scripted;
+      modelId = "scripted";
+    }
   }
 
   responseCache.set(cacheKey, { action, expiresAt: Date.now() + CACHE_TTL_MS });
