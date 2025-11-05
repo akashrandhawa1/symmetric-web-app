@@ -42,19 +42,16 @@ const summariseIntakeProfileForPrompt = (profile: StoredIntakeProfile | null): s
     const answers = profile.answers ?? {};
     const summaryPairs: Array<[string, unknown]> = [
         ["name", answers.name],
-        ["goal_intent", answers.goal_intent],
+        ["primary_goal", answers.primary_goal ?? answers.goal_intent],
         ["motivation", answers.motivation],
         ["timeline", answers.timeline],
         ["branch", answers.branch],
-        ["performance_focus", answers.performance_focus],
-        ["constraints", answers.constraints],
-        ["past_injuries", answers.past_injuries],
-        ["experience_level", answers.experience_level],
-        ["confidence", answers.form_confidence],
-        ["environment", answers.environment],
-        ["equipment", answers.equipment],
-        ["frequency", answers.frequency],
-        ["session_length", answers.session_length],
+        ["training_context", answers.training_context ?? answers.experience_level],
+        ["equipment_session", answers.equipment_session],
+        ["frequency_commitment", answers.frequency_commitment],
+        ["body_metrics", answers.body_metrics],
+        ["limitations", answers.limitations ?? answers.constraints],
+        ["sport_context", answers.sport_context ?? answers.sport_role],
         ["preferences", answers.preferences],
         ["program_style", answers.program_style],
     ];
@@ -79,7 +76,8 @@ const buildIntakeHighlights = (profile: StoredIntakeProfile | null): string[] =>
     const goalRaw = normaliseString(summary?.goal ?? answers.goal_intent ?? answers.goal ?? 'general strength');
     const motivationRaw = normaliseString(answers.motivation ?? '');
     const environmentRaw = normaliseString(answers.environment ?? '');
-    const equipmentRaw = answers.equipment;
+    const equipmentSession = answers.equipment_session ?? null;
+    const equipmentRaw = Array.isArray(equipmentSession?.equipment) ? equipmentSession.equipment : answers.equipment;
     const environmentLower = environmentRaw.toLowerCase();
     const equipmentList = Array.isArray(equipmentRaw)
         ? equipmentRaw.map((item) => normaliseString(item)).filter(Boolean)
@@ -87,7 +85,11 @@ const buildIntakeHighlights = (profile: StoredIntakeProfile | null): string[] =>
             .split(/[,/]|\band\b|\bwith\b/)
             .map((part) => part.trim())
             .filter(Boolean);
-    const equipmentLineRaw = equipmentList.length ? equipmentList.join(', ') : normaliseString(answers.equipment ?? 'bodyweight');
+    const equipmentLineRaw = equipmentList.length
+        ? equipmentList.join(', ')
+        : equipmentSession?.equipment && Array.isArray(equipmentSession.equipment) && equipmentSession.equipment.length
+        ? equipmentSession.equipment.join(', ')
+        : normaliseString(answers.equipment ?? 'bodyweight');
     const equipmentLineLower = equipmentLineRaw.toLowerCase();
     const limitedToBodyweight = (
         !equipmentList.length && environmentLower.includes('minimal')
@@ -118,8 +120,13 @@ const buildIntakeHighlights = (profile: StoredIntakeProfile | null): string[] =>
         equipmentLine = 'full gym access';
     }
 
-    const daysPerWeek = summary?.days_per_week ?? Number.parseInt(normaliseString(answers.frequency ?? ''), 10);
-    const sessionLengthMin = summary?.session_length_min ?? Number.parseInt(normaliseString(answers.session_length ?? ''), 10);
+    const rawDaysPerWeek = summary?.days_per_week
+        ?? Number(answers.frequency_commitment?.days_per_week ?? answers.frequency ?? 0);
+    const daysPerWeek = Number.isFinite(rawDaysPerWeek) && rawDaysPerWeek > 0 ? rawDaysPerWeek : undefined;
+
+    const rawSessionMinutes = summary?.session_length_min
+        ?? Number(equipmentSession?.session_minutes ?? answers.session_length ?? 0);
+    const sessionLengthMin = Number.isFinite(rawSessionMinutes) && rawSessionMinutes > 0 ? rawSessionMinutes : undefined;
     const scheduleLine = [
         Number.isFinite(daysPerWeek) && daysPerWeek ? `${daysPerWeek} sessions/week` : null,
         Number.isFinite(sessionLengthMin) && sessionLengthMin ? `${sessionLengthMin} min each` : null,
@@ -127,7 +134,12 @@ const buildIntakeHighlights = (profile: StoredIntakeProfile | null): string[] =>
         .filter(Boolean)
         .join(', ');
 
-    const constraintsRaw = normaliseString(answers.constraints ?? summary?.constraints_notes ?? 'none');
+    const constraintsRaw = normaliseString(
+        (Array.isArray(answers.limitations) ? answers.limitations.join(', ') : answers.limitations)
+        ?? answers.constraints
+        ?? summary?.constraints_notes
+        ?? 'none'
+    );
     const preferencesRaw = normaliseString(answers.preferences ?? '');
     const focusRaw = normaliseString(answers.performance_focus ?? '');
     const styleRaw = normaliseString(answers.program_style ?? '');

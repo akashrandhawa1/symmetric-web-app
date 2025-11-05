@@ -1,9 +1,16 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import type { NextAction, IntakeTurn, NegotiationTurn, WrapTurn, PlanSummary } from "../../coach/intake/openSchema";
 import type { Topic } from "../../coach/intake/contextMap";
-import { SCRIPTED_TOPIC_SEQUENCE, resolveIntakeBranch, scriptedNextAction } from "../../coach/intake/scriptedFlow";
+import {
+  SCRIPTED_TOPIC_SEQUENCE,
+  PERSONA_LINES,
+  resolveIntakeBranch,
+  scriptedNextAction,
+} from "../../coach/intake/scriptedFlow";
 import { saveIntakeProfile } from "../../coach/intake/profileStorage";
 import { coachState } from "./coachPhase";
+import { tryParseUserAnswer } from "./miloChatLogic";
+import type { QuestionId } from "./miloChatTypes";
 import IntakeProgressIndicator from "./IntakeProgressIndicator";
 import EnhancedTypingIndicator from "./EnhancedTypingIndicator";
 import AnswerSummaryPanel from "./AnswerSummaryPanel";
@@ -55,7 +62,12 @@ type IntakeRequestPayload = {
   recent_topics?: string[];
 };
 
-const TOPIC_KEYS = SCRIPTED_TOPIC_SEQUENCE;
+const PERSONA_TOPIC_KEYS = Object.keys(PERSONA_LINES).filter(
+  (key): key is Topic => key !== "default"
+);
+const TOPIC_KEYS: Topic[] = Array.from(
+  new Set<Topic>([...SCRIPTED_TOPIC_SEQUENCE, ...PERSONA_TOPIC_KEYS])
+);
 const TOPIC_SET = new Set<Topic>(TOPIC_KEYS);
 
 const INITIAL_MESSAGES: Message[] = [
@@ -169,6 +181,35 @@ const sanitizeNote = (value: string | null | undefined): string | null => {
     return null;
   }
   return trimmed;
+};
+
+const topicToQuestionId = (topic: Topic): QuestionId | null => {
+  switch (topic) {
+    case "primary_goal":
+    case "goal_intent":
+      return "primary_goal";
+    case "training_context":
+    case "experience_level":
+      return "training_context";
+    case "equipment_session":
+    case "equipment":
+      return "equipment_session";
+    case "frequency_commitment":
+    case "frequency":
+      return "frequency_commitment";
+    case "body_metrics":
+      return "body_metrics";
+    case "limitations":
+    case "constraints":
+      return "limitations";
+    case "sport_context":
+    case "sport_role":
+      return "sport_context";
+    case "name":
+      return "name";
+    default:
+      return null;
+  }
 };
 
 const deriveFirstName = (intro: string | undefined): string => {
@@ -488,85 +529,44 @@ export default function CoachMiloOnboardingOpen({ onComplete }: { onComplete: ()
 
   // Generate contextual transitions between questions
   const generateTransition = useCallback((nextTopic: Topic, answers: Record<string, any>): string | null => {
-    const firstName = answers.name ? answers.name.split(',')[0].trim() : null;
+    const firstName = answers.name ? answers.name.split(/[ ,]/)[0].trim() : null;
     const greeting = firstName || "Got it";
+    const goal = typeof answers.primary_goal === "string" ? answers.primary_goal.toLowerCase() :
+      typeof answers.goal_intent === "string" ? answers.goal_intent.toLowerCase() : "";
 
-    // Build context from previous answers
-    const parts: string[] = [];
-
-    if (nextTopic === "motivation" && answers.goal_intent) {
-      return `${greeting} - ${answers.goal_intent}. What's driving that goal?`;
+    if (nextTopic === "primary_goal") {
+      return `${greeting}! What’s the big focus—strength, muscle, sport, rehab, or general fitness?`;
     }
 
-    if (nextTopic === "timeline" && answers.goal_intent) {
-      return `Love it. Working on ${answers.goal_intent.toLowerCase()}.`;
+    if (nextTopic === "training_context") {
+      return `${greeting}. How would you describe your lifting experience?`;
     }
 
-    if (nextTopic === "sport_role" && answers.goal_intent) {
-      if (answers.goal_intent.toLowerCase().includes("performance") || answers.goal_intent.toLowerCase().includes("sport")) {
-        return `${greeting} - let's dial in the sport context.`;
+    if (nextTopic === "equipment_session") {
+      return `${greeting}. Let's talk setup—what gear and how long per session?`;
+    }
+
+    if (nextTopic === "frequency_commitment") {
+      const session = answers.equipment_session;
+      if (session?.session_minutes) {
+        return `Perfect, ${session.session_minutes} minutes per session. How many days per week fits?`;
       }
-      return null; // Skip if not sport-focused
+      return `${greeting}. How many days per week can you train, and for how many weeks?`;
     }
 
-    if (nextTopic === "constraints" || nextTopic === "past_injuries") {
-      if (answers.experience_level) {
-        return `${greeting}. Before we load up, any injuries or limitations I should know about?`;
-      }
-      return `Now the important part - any injuries or constraints?`;
+    if (nextTopic === "body_metrics") {
+      return `${greeting}. Quick stats check—age, height (ft/in), and weight in pounds?`;
     }
 
-    if (nextTopic === "baseline_strength" || nextTopic === "baseline_conditioning") {
-      return `Perfect. Let me get a sense of where you're starting from.`;
+    if (nextTopic === "limitations" && /rehab|injur|recover/.test(goal)) {
+      return `Noted. Any joints or injuries I should protect before we load up?`;
     }
 
-    if (nextTopic === "experience_level") {
-      if (answers.goal_intent) {
-        return `Nice. How long have you been training?`;
-      }
-      return null;
+    if (nextTopic === "sport_context" && /sport|team|athlete/.test(goal)) {
+      return `${greeting}. Which sport or position should I tailor this around?`;
     }
 
-    if (nextTopic === "environment") {
-      return `${greeting}. Let's talk about your setup.`;
-    }
-
-    if (nextTopic === "equipment" && answers.environment) {
-      const env = answers.environment.toLowerCase();
-      if (env.includes("home") || env.includes("minimal")) {
-        return `And what equipment do you have access to?`;
-      }
-      return null; // Already covered in environment
-    }
-
-    if (nextTopic === "frequency") {
-      if (answers.equipment || answers.environment) {
-        if (answers.equipment === "bodyweight" || answers.environment?.toLowerCase().includes("minimal")) {
-          parts.push("bodyweight training");
-        } else if (answers.equipment?.toLowerCase().includes("full") || answers.environment?.toLowerCase().includes("gym")) {
-          parts.push("full gym access");
-        }
-
-        if (parts.length > 0) {
-          return `${greeting} - ${parts.join(", ")}. How many days per week can you train?`;
-        }
-      }
-      return `Great. How often can you train?`;
-    }
-
-    if (nextTopic === "session_length" && answers.frequency) {
-      return `Perfect - ${answers.frequency}× per week. How long per session?`;
-    }
-
-    if (nextTopic === "sleep_stress" || nextTopic === "recovery") {
-      return `Almost there. Let's talk recovery.`;
-    }
-
-    if (nextTopic === "preferences") {
-      return `Last thing - any preferences for how we structure your training?`;
-    }
-
-    return null; // No transition needed
+    return null;
   }, []);
 
   const handleAction = useCallback(
@@ -743,8 +743,46 @@ export default function CoachMiloOnboardingOpen({ onComplete }: { onComplete: ()
 
       setActiveAsk(null);
 
+      const questionId: QuestionId | null = topicKey ? topicToQuestionId(topicKey) : null;
+      const parsed = questionId ? tryParseUserAnswer(questionId, trimmed) : null;
+      const storedValue = parsed ? parsed.value : trimmed;
+
       const fieldId = topicKey ?? `note_${Date.now()}`;
-      const nextAnswers = { ...answersRef.current, [fieldId]: trimmed };
+      const nextAnswers = { ...answersRef.current, [fieldId]: storedValue };
+
+      if (questionId === "body_metrics" && parsed && typeof parsed.value === "object") {
+        const metrics = parsed.value as { age?: number | null; height_ft?: number | null; height_in?: number | null; weight_lb?: number | null };
+        nextAnswers.body_metrics = metrics;
+        if (metrics.age != null) nextAnswers.age = metrics.age;
+        if (metrics.height_ft != null) nextAnswers.height_ft = metrics.height_ft;
+        if (metrics.height_in != null) nextAnswers.height_in = metrics.height_in;
+        if (metrics.weight_lb != null) nextAnswers.weight_lb = metrics.weight_lb;
+      }
+
+      if (questionId === "equipment_session" && parsed && typeof parsed.value === "object") {
+        nextAnswers.equipment_session = parsed.value;
+      }
+
+      if (questionId === "frequency_commitment" && parsed && typeof parsed.value === "object") {
+        nextAnswers.frequency_commitment = parsed.value;
+      }
+
+      if (questionId === "primary_goal" && parsed) {
+        nextAnswers.primary_goal = parsed.value;
+      }
+
+      if (questionId === "training_context" && parsed) {
+        nextAnswers.training_context = parsed.value;
+      }
+
+      if (questionId === "limitations" && parsed) {
+        nextAnswers.limitations = parsed.value;
+      }
+
+      if (questionId === "sport_context" && parsed) {
+        nextAnswers.sport_context = parsed.value;
+      }
+
       answersRef.current = nextAnswers;
 
       if (topicKey) {
@@ -844,27 +882,60 @@ export default function CoachMiloOnboardingOpen({ onComplete }: { onComplete: ()
 
     const labelMap: Record<string, string> = {
       name: "Name",
+      primary_goal: "Goal",
       goal_intent: "Goal",
+      training_context: "Experience",
+      experience_level: "Experience",
+      equipment_session: "Equipment",
+      equipment: "Equipment",
+      frequency_commitment: "Days/week",
+      frequency: "Days/week",
+      body_metrics: "Body metrics",
+      limitations: "Limitations",
+      constraints: "Constraints",
+      sport_context: "Sport",
+      sport_role: "Sport",
       motivation: "Why",
       timeline: "Timeline",
-      sport_role: "Sport",
-      constraints: "Constraints",
       baseline_strength: "Strength",
-      experience_level: "Experience",
       environment: "Environment",
-      equipment: "Equipment",
-      frequency: "Days/week",
       session_length: "Session length",
     };
 
     for (const [key, value] of Object.entries(answers)) {
-      if (labelMap[key] && value) {
-        summary.push({
-          key,
-          label: labelMap[key],
-          value: String(value),
-        });
+      if (!labelMap[key] || value == null) continue;
+
+      let displayValue: string;
+
+      if (key === "equipment_session" && typeof value === "object") {
+        const session = value as { equipment?: string[]; session_minutes?: number };
+        const equipment = session.equipment?.join(", ") ?? "";
+        const minutes = session.session_minutes ? `${session.session_minutes} min` : "";
+        displayValue = [equipment, minutes].filter(Boolean).join(" · ") || "(details)";
+      } else if (key === "frequency_commitment" && typeof value === "object") {
+        const freq = value as { days_per_week?: number; focus_weeks?: number };
+        const days = freq.days_per_week ? `${freq.days_per_week}×/wk` : "";
+        const weeks = freq.focus_weeks ? `${freq.focus_weeks} wks` : "";
+        displayValue = [days, weeks].filter(Boolean).join(" · ") || "(details)";
+      } else if (key === "body_metrics" && typeof value === "object") {
+        const metrics = value as { age?: number; height_ft?: number; height_in?: number; weight_lb?: number };
+        const pieces = [
+          metrics.age ? `${metrics.age}y` : null,
+          metrics.height_ft != null ? `${metrics.height_ft}'${metrics.height_in ?? 0}"` : null,
+          metrics.weight_lb ? `${metrics.weight_lb} lb` : null,
+        ].filter(Boolean) as string[];
+        displayValue = pieces.join(" · ") || "(details)";
+      } else if (Array.isArray(value)) {
+        displayValue = value.join(", ");
+      } else {
+        displayValue = String(value);
       }
+
+      summary.push({
+        key,
+        label: labelMap[key],
+        value: displayValue,
+      });
     }
 
     return summary;
@@ -999,7 +1070,7 @@ export default function CoachMiloOnboardingOpen({ onComplete }: { onComplete: ()
     if (activeAsk?.kind === "turn") {
       const topic = activeAsk.topic;
 
-      if (topic === "experience_level") {
+      if (topic === "training_context" || topic === "experience_level") {
         if (chip.toLowerCase().includes("beginner") || chip.toLowerCase().includes("new")) {
           metadata.icon = "🌱";
           metadata.hint = "We'll build your foundation";
@@ -1013,7 +1084,7 @@ export default function CoachMiloOnboardingOpen({ onComplete }: { onComplete: ()
         }
       }
 
-      if (topic === "goal_intent") {
+      if (topic === "primary_goal" || topic === "goal_intent") {
         if (chip.toLowerCase().includes("muscle")) {
           metadata.icon = "💪";
           metadata.hint = "Focus on hypertrophy and size";
@@ -1021,22 +1092,25 @@ export default function CoachMiloOnboardingOpen({ onComplete }: { onComplete: ()
           metadata.icon = "🏋️";
           metadata.hint = "Build max force output";
           metadata.recommended = true;
-        } else if (chip.toLowerCase().includes("performance")) {
+        } else if (chip.toLowerCase().includes("performance") || chip.toLowerCase().includes("sport")) {
           metadata.icon = "⚡";
           metadata.hint = "Sport-specific power";
+        } else if (chip.toLowerCase().includes("rehab")) {
+          metadata.icon = "🩹";
+          metadata.hint = "We'll keep joints calm and supported";
         }
       }
 
-      if (topic === "frequency") {
-        if (chip === "3") {
+      if (topic === "frequency_commitment" || topic === "frequency") {
+        if (/3/.test(chip)) {
           metadata.recommended = true;
           metadata.hint = "Optimal for most goals";
-        } else if (chip === "4") {
+        } else if (/4/.test(chip)) {
           metadata.hint = "Great for faster progress";
         }
       }
 
-      if (topic === "equipment") {
+      if (topic === "equipment_session" || topic === "equipment") {
         if (chip.toLowerCase().includes("full") || chip.toLowerCase().includes("gym")) {
           metadata.icon = "🏋️";
           metadata.hint = "Access to all exercise variations";

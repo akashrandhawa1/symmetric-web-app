@@ -1,16 +1,58 @@
-import type { Answers, QuestionId } from "./miloChatTypes";
+import type {
+  Answers,
+  EquipmentKind,
+  EquipmentSession,
+  FrequencyCommitment,
+  GoalIntent,
+  PrimaryGoalChoice,
+  QuestionId,
+  TrainingContextLevel,
+} from "./miloChatTypes";
+
+const PRIMARY_GOAL_CHOICES: PrimaryGoalChoice[] = [
+  "strength",
+  "muscle",
+  "sport",
+  "rehab",
+  "general",
+];
+
+const TRAINING_CONTEXT_LEVELS: TrainingContextLevel[] = [
+  "new",
+  "some_experience",
+  "solid_lifter",
+  "very_experienced",
+];
+
+const EQUIPMENT_KEYWORDS: Record<EquipmentKind, RegExp> = {
+  barbell: /(barbell|oly|olympic)/i,
+  dumbbells: /(dumbbell|db)/i,
+  machines: /(machine|leg\s*press|hack|cable|smith)/i,
+  bands: /(band|tube|loop)/i,
+  rack: /(rack|cage|power\s*rack)/i,
+  bodyweight: /(bodyweight|no equipment|none|just me)/i,
+};
+
+const LIMITATION_KEYWORDS: Record<string, string> = {
+  knees: "knees",
+  hips: "hips",
+  low_back: "low back",
+  shoulders: "shoulders",
+  ankles: "ankles",
+  none: "none",
+  other: "other",
+};
+
+const DEFAULT_SESSION_MINUTES = 45;
+const DEFAULT_FREQUENCY_DAYS = 3;
 
 export const essentialIds: QuestionId[] = [
   "name",
-  "vibe",
-  "goal",
-  "experience",
-  "equipment",
-  "session_length",
-  "frequency",
-  "constraints",
-  "intensity_ref",
-  "sensor_today",
+  "primary_goal",
+  "training_context",
+  "equipment_session",
+  "frequency_commitment",
+  "body_metrics",
 ];
 
 export const timeGreeting = () => {
@@ -21,54 +63,128 @@ export const timeGreeting = () => {
 };
 
 export function hasEnough(a: Answers) {
+  const goal = resolveLegacyGoal(a);
+  const experience = resolveExperienceLevel(a);
+  const equipment = resolveEquipmentSession(a)?.equipment ?? [];
+  const sessionMinutes = resolveEquipmentSession(a)?.session_minutes ?? a.session_length;
+  const frequency = resolveFrequencyCommitment(a)?.days_per_week ?? a.frequency;
+  const metricsComplete =
+    isFiniteNumber(a.age) &&
+    isFiniteNumber(a.height_ft) &&
+    isFiniteNumber(a.height_in) &&
+    isFiniteNumber(a.weight_lb);
+
   return (
-    !!a.goal &&
-    !!a.experience &&
-    (a.equipment?.length ?? 0) > 0 &&
-    !!a.session_length &&
-    !!a.intensity_ref &&
-    !!a.sensor_today &&
-    (a.constraints?.length ?? 0) >= 1
+    !!goal &&
+    !!experience &&
+    equipment.length > 0 &&
+    !!sessionMinutes &&
+    !!frequency &&
+    metricsComplete
   );
 }
 
-function goalLabel(id?: Answers["goal"]) {
-  switch (id) {
-    case "lower_body_strength":
-      return "Lower-Body Strength";
-    case "build_muscle":
-      return "Build Muscle";
-    case "general_fitness":
-      return "General Fitness";
-    case "rehab":
-      return "Return from Injury";
-    default:
-      return "Personal Plan";
+function resolveLegacyGoal(a: Answers): Answers["goal"] | undefined {
+  if (a.goal) return a.goal;
+  const primary = (a.primary_goal ?? a.goal_intent) as string | undefined;
+  if (!primary) return undefined;
+  const value = primary.toLowerCase();
+  if (value.includes("strength")) return "lower_body_strength";
+  if (value.includes("muscle")) return "build_muscle";
+  if (value.includes("rehab") || value.includes("recover")) return "rehab";
+  if (value.includes("sport") || value.includes("performance")) return "lower_body_strength";
+  return "general_fitness";
+}
+
+function resolveEquipmentSession(a: Answers): EquipmentSession | undefined {
+  if (a.equipment_session) return a.equipment_session;
+  const equipment: EquipmentKind[] = [];
+  (a.equipment ?? []).forEach((legacy) => {
+    switch (legacy) {
+      case "barbell_rack":
+        equipment.push("barbell", "rack");
+        break;
+      case "dumbbells":
+        equipment.push("dumbbells");
+        break;
+      case "machines":
+        equipment.push("machines");
+        break;
+      case "bands":
+        equipment.push("bands");
+        break;
+      case "bodyweight":
+        equipment.push("bodyweight");
+        break;
+      default:
+        break;
+    }
+  });
+  if (!equipment.length && !a.session_length) {
+    return undefined;
   }
+  return {
+    equipment: Array.from(new Set(equipment)),
+    session_minutes: a.session_length ?? null,
+  };
+}
+
+function resolveFrequencyCommitment(a: Answers): FrequencyCommitment | undefined {
+  if (a.frequency_commitment) return a.frequency_commitment;
+  if (a.frequency == null) return undefined;
+  return { days_per_week: a.frequency, focus_weeks: undefined };
+}
+
+function resolveExperienceLevel(a: Answers): string | undefined {
+  if (a.training_context) return a.training_context;
+  if (a.experience) {
+    switch (a.experience) {
+      case "new":
+        return "new";
+      case "intermediate":
+        return "some_experience";
+      case "advanced":
+        return "solid_lifter";
+      default:
+        return a.experience;
+    }
+  }
+  return undefined;
+}
+
+function resolveConstraints(a: Answers): string[] {
+  if (Array.isArray(a.limitations) && a.limitations.length) {
+    return a.limitations;
+  }
+  return a.constraints ?? [];
 }
 
 export function buildPlanPreview(a: Answers) {
-  const time = a.session_length ?? 45;
-  const freq = a.frequency ?? 3;
-  const equip = new Set(a.equipment ?? []);
-  const knees = (a.constraints ?? []).includes("knees");
-  const hips = (a.constraints ?? []).includes("hips");
-  const lowBack = (a.constraints ?? []).includes("low_back");
-  const exp = a.experience ?? "new";
-  const goal = a.goal;
+  const goal = resolveLegacyGoal(a) ?? "general_fitness";
+  const equipmentSession = resolveEquipmentSession(a);
+  const freq = resolveFrequencyCommitment(a)?.days_per_week ?? DEFAULT_FREQUENCY_DAYS;
+  const sessionMinutes = equipmentSession?.session_minutes ?? a.session_length ?? DEFAULT_SESSION_MINUTES;
+  const equipmentSet = new Set(equipmentSession?.equipment ?? []);
+  const constraints = resolveConstraints(a);
+  const knees = constraints.includes("knees");
+  const hips = constraints.includes("hips");
+  const lowBack = constraints.includes("low_back");
+  const experience = resolveExperienceLevel(a) ?? "new";
 
-  // Smarter primary exercise selection based on goal, constraints, and equipment
+  const hasBarbell = equipmentSet.has("barbell") || equipmentSet.has("rack");
+  const hasDumbbells = equipmentSet.has("dumbbells");
+  const hasMachines = equipmentSet.has("machines");
+
   let primary = "Back Squat";
   let primaryDetails = "";
 
   if (goal === "rehab" || knees || hips) {
-    // Joint-friendly options
-    if (equip.has("barbell_rack")) {
+    if (hasBarbell) {
       primary = "Box Squat (high-bar)";
       primaryDetails = "paused at parallel";
-    } else if (equip.has("machines")) {
+    } else if (hasMachines) {
       primary = knees ? "Leg Press (short ROM)" : "Hack Squat (controlled)";
-    } else if (equip.has("dumbbells")) {
+    } else if (hasDumbbells) {
       primary = "Goblet Squat";
       primaryDetails = "tempo 3-1-1";
     } else {
@@ -76,13 +192,12 @@ export function buildPlanPreview(a: Answers) {
       primaryDetails = "slow eccentric";
     }
   } else if (goal === "build_muscle") {
-    // Hypertrophy-focused
-    if (equip.has("barbell_rack")) {
+    if (hasBarbell) {
       primary = "High-Bar Squat";
       primaryDetails = "deep, controlled";
-    } else if (equip.has("machines")) {
+    } else if (hasMachines) {
       primary = "Hack Squat";
-    } else if (equip.has("dumbbells")) {
+    } else if (hasDumbbells) {
       primary = "Bulgarian Split Squat";
       primaryDetails = "slow tempo";
     } else {
@@ -90,88 +205,81 @@ export function buildPlanPreview(a: Answers) {
       primaryDetails = "3-1-X";
     }
   } else if (goal === "lower_body_strength") {
-    // Strength-focused
-    if (equip.has("barbell_rack")) {
-      primary = exp === "advanced" ? "Back Squat (low-bar)" : "Back Squat";
-    } else if (equip.has("machines")) {
+    if (hasBarbell) {
+      primary = experience === "very_experienced" ? "Back Squat (low-bar)" : "Back Squat";
+    } else if (hasMachines) {
       primary = "Hack Squat";
-    } else if (equip.has("dumbbells")) {
+    } else if (hasDumbbells) {
       primary = "Goblet Squat (heavy)";
     } else {
       primary = "Pistol Squat (assisted)";
     }
   } else {
-    // General fitness
-    if (equip.has("barbell_rack")) {
+    if (hasBarbell) {
       primary = "Back Squat";
-    } else if (equip.has("machines")) {
+    } else if (hasMachines) {
       primary = "Leg Press";
-    } else if (equip.has("dumbbells")) {
+    } else if (hasDumbbells) {
       primary = "Goblet Squat";
     } else {
       primary = "Air Squat (high volume)";
     }
   }
 
-  // Smarter secondary selection
   let secondary = "RDL";
   if (lowBack) {
-    secondary = equip.has("machines") ? "Leg Curl" : "Glute Bridge";
+    secondary = hasMachines ? "Leg Curl" : "Glute Bridge";
   } else if (goal === "build_muscle") {
-    secondary = equip.has("barbell_rack") || equip.has("dumbbells")
-      ? "RDL (slow eccentric)"
-      : equip.has("machines")
-      ? "Seated Leg Curl"
-      : "Single-Leg Hip Thrust";
+    if (hasBarbell || hasDumbbells) secondary = "RDL (slow eccentric)";
+    else if (hasMachines) secondary = "Seated Leg Curl";
+    else secondary = "Single-Leg Hip Thrust";
   } else {
-    secondary =
-      equip.has("dumbbells") || equip.has("barbell_rack")
-        ? "RDL"
-        : equip.has("machines")
-        ? "Hip Hinge Machine"
-        : "Hip Thrust (BW)";
+    if (hasDumbbells || hasBarbell) secondary = "RDL";
+    else if (hasMachines) secondary = "Hip Hinge Machine";
+    else secondary = "Hip Thrust (BW)";
   }
 
-  // Smarter accessory selection based on time and goal
-  const accessory =
-    goal === "build_muscle" && equip.has("dumbbells")
-      ? "Walking Lunges"
-      : knees
-      ? "Leg Press (short ROM)"
-      : equip.has("dumbbells")
-      ? "DB Split Squat"
-      : equip.has("machines")
-      ? "Leg Extension"
-      : "Step-ups";
+  const accessory = (() => {
+    if (goal === "build_muscle" && hasDumbbells) return "Walking Lunges";
+    if (knees) return "Leg Press (short ROM)";
+    if (hasDumbbells) return "DB Split Squat";
+    if (hasMachines) return "Leg Extension";
+    return "Step-ups";
+  })();
 
-  // Volume and intensity based on experience and goal
+  const intensityRef = a.intensity_ref ?? "rpe";
   let mainSets = "3×5";
   let mainIntensity = "RPE 7–8";
 
   if (goal === "lower_body_strength") {
-    mainSets = exp === "advanced" ? "4×3" : exp === "intermediate" ? "4×4" : "3×5";
-    mainIntensity = a.intensity_ref === "percent"
-      ? exp === "new" ? "70–75%" : exp === "intermediate" ? "80–85%" : "85–90%"
-      : exp === "new" ? "RPE 7" : "RPE 8";
+    switch (experience) {
+      case "very_experienced":
+        mainSets = "4×3";
+        break;
+      case "some_experience":
+      case "solid_lifter":
+        mainSets = "4×4";
+        break;
+      default:
+        mainSets = "3×5";
+        break;
+    }
+    if (intensityRef === "percent") mainIntensity = "85–90%";
   } else if (goal === "build_muscle") {
-    mainSets = exp === "advanced" ? "4×8" : exp === "intermediate" ? "3×8" : "3×10";
-    mainIntensity = "RPE 7–8";
+    mainSets = experience === "very_experienced" ? "4×8" : experience === "some_experience" ? "3×8" : "3×10";
   } else if (goal === "rehab") {
     mainSets = "3×8";
     mainIntensity = "RPE 5–6";
   } else {
-    mainSets = exp === "advanced" ? "3×6" : "3×8";
-    mainIntensity = "RPE 6–7";
+    mainSets = experience === "very_experienced" ? "3×6" : "3×8";
   }
 
-  const blockCount = time >= 45 ? 3 : time >= 30 ? 2 : 1;
+  const blockCount = sessionMinutes >= 45 ? 3 : sessionMinutes >= 30 ? 2 : 1;
 
   const blocks = [
     {
       name: primary,
-      details: primaryDetails
-        ? `${mainSets} @ ${mainIntensity} • ${primaryDetails}`
-        : `${mainSets} @ ${mainIntensity}`,
+      details: primaryDetails ? `${mainSets} • ${mainIntensity} • ${primaryDetails}` : `${mainSets} • ${mainIntensity}`,
       estDrop: goal === "lower_body_strength" ? 22 : goal === "build_muscle" ? 18 : 15,
     },
   ];
@@ -179,7 +287,12 @@ export function buildPlanPreview(a: Answers) {
   if (blockCount >= 2) {
     blocks.push({
       name: secondary,
-      details: exp === "new" ? "3×6 (RPE 6–7)" : goal === "build_muscle" ? "3×10 (RPE 7)" : "3×5 (RPE 7)",
+      details:
+        experience === "new"
+          ? "3×6 • RPE 6–7"
+          : goal === "build_muscle"
+          ? "3×10 • RPE 7"
+          : "3×5 • RPE 7",
       estDrop: goal === "build_muscle" ? 14 : 12,
     });
   }
@@ -187,19 +300,18 @@ export function buildPlanPreview(a: Answers) {
   if (blockCount >= 3) {
     blocks.push({
       name: accessory,
-      details: goal === "build_muscle" ? "3×12 (RPE 7)" : "2×8–10 (RPE 7)",
+      details: goal === "build_muscle" ? "3×12 • RPE 7" : "2×8–10 • RPE 7",
       estDrop: 8,
     });
   }
 
-  // Calculate estimated session drop based on blocks and experience
   let drop = blocks.reduce((sum, block) => sum + block.estDrop, 0);
-  if (exp === "new") drop = Math.round(drop * 0.85); // New lifters fatigue less per set
-  if (goal === "rehab") drop = Math.max(18, Math.round(drop * 0.65)); // Rehab is gentler
+  if (experience === "new") drop = Math.round(drop * 0.85);
+  if (goal === "rehab") drop = Math.max(18, Math.round(drop * 0.65));
   drop = Math.max(15, Math.min(50, drop));
 
   return {
-    title: `${goalLabel(a.goal)} • ${time} min`,
+    title: `${goalLabel(goal)} • ${sessionMinutes} min` as const,
     freq,
     blocks,
     estSessionDrop: drop,
@@ -207,36 +319,22 @@ export function buildPlanPreview(a: Answers) {
   } as const;
 }
 
-export function getPromptFor(id: QuestionId, a: Answers): string {
-  const name = a.name?.split(" ")[0] || "friend";
-  switch (id) {
-    case "name":
-      return `${timeGreeting()} — what should I call you? (You can change this anytime)`;
-    case "vibe":
-      return `Quick style check: hype, calm, or expert-y?`;
-    case "goal":
-      return `What are you chasing for the next 4–6 weeks — lower-body strength, build muscle, general fitness, or rehab/returning?`;
-    case "experience":
-      return `How long have you been lifting — new, intermediate, or advanced? (A sentence works too.)`;
-    case "equipment":
-      return `What are you training with today? Barbell & rack, dumbbells, machines, bands, or bodyweight only?`;
-    case "session_length":
-      return `About how long do you want sessions: 20, 30, 45, or 60+ minutes?`;
-    case "frequency":
-      return `How many days/week can you train right now — 1–4? (I’ll default to 3 if you skip.)`;
-    case "constraints":
-      return `Any joints I should be kind to — knees, hips, low back — or none?`;
-    case "intensity_ref":
-      return `How should I set loads — RPE, %1RM, or I can choose?`;
-    case "sensor_today":
-      return `Using the Symmetric sensor today — yes or no?`;
-    case "age_band":
-      return `Age range (helps pace recovery)?`;
-    case "bodyweight":
-      return `Bodyweight (optional; seeds dumbbell starts).`;
+function goalLabel(goal: Answers["goal"] | undefined) {
+  switch (goal) {
+    case "lower_body_strength":
+      return "Lower-Body Strength";
+    case "build_muscle":
+      return "Build Muscle";
+    case "rehab":
+      return "Return from Injury";
+    case "general_fitness":
     default:
-      return `Tell me more, ${name}.`;
+      return "Personal Plan";
   }
+}
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
 }
 
 export function nextMicrocopy(id: QuestionId, value: unknown, a: Answers) {
@@ -244,17 +342,35 @@ export function nextMicrocopy(id: QuestionId, value: unknown, a: Answers) {
   switch (id) {
     case "name":
       return `Great to meet you, ${name}!`;
-    case "vibe":
-      return `Vibe set — I’ll match your energy.`;
-    case "goal":
-      if (value === "lower_body_strength") return "Strength block queued — heavy but clean.";
-      if (value === "build_muscle") return "Hypertrophy focus locked — tempo + range.";
-      if (value === "rehab") return "Joint-friendly first — tempo you can own.";
-      return "Balanced build — well-rounded today.";
-    case "experience":
-      if (value === "new") return "We’ll groove technique first — form > load.";
-      if (value === "advanced") return "Top set + back-offs — tight rests.";
-      return "Solid base — progressive loading, clean reps.";
+    case "primary_goal":
+      return `Dialed — we'll anchor on ${String(value ?? "your goal")}.`;
+    case "training_context":
+      if (value === "new") return "No rush — we'll groove the movement pattern.";
+      if (value === "some_experience") return "Solid base — we can ramp with control.";
+      if (value === "solid_lifter") return "Nice — we'll stack quality volume.";
+      if (value === "very_experienced") return "Love it — precision loading unlocked.";
+      return "Got it — I'll match the intensity.";
+    case "body_composition":
+      return `Noted — we'll steer cues toward ${String(value ?? "that focus")}.`;
+    case "activity_recovery":
+      return "Logged — that helps me modulate recovery blocks.";
+    case "specific_target":
+      return "Perfect — we'll reverse-engineer that milestone.";
+    case "training_time":
+      return "Great — I'll time heavy work when your energy peaks.";
+    case "exercise_preferences":
+      return "Locked — we’ll keep momentum with movements you enjoy.";
+    case "limitations":
+      if (Array.isArray(value) && value.includes("none")) return "Perfect — we'll push confidently.";
+      return "Noted — I'll keep joints smiling.";
+    case "sport_context":
+      return "Game plan incoming — tailoring to that sport.";
+    case "equipment_session":
+      return "Setup saved — I'll pace sessions around it.";
+    case "frequency_commitment":
+      return `Locked — ${resolveFrequencyCommitment(a)?.days_per_week ?? "your"}x/week it is.`;
+    case "body_metrics":
+      return "Thanks — those numbers help me calibrate load.";
     case "equipment":
       return "Got it — building your pool now.";
     case "session_length":
@@ -265,101 +381,267 @@ export function nextMicrocopy(id: QuestionId, value: unknown, a: Answers) {
       return Array.isArray(value) && value.includes("knees")
         ? "Knees noted — angles stay friendly."
         : "Copy — we’ll keep joints happy.";
-    case "intensity_ref":
-      if (value === "percent") return "Percent zones it is — dialing exact loads.";
-      if (value === "rpe") return "RPE it is — top set @7–8 then back-offs.";
-      return "I’ll steer loads — you focus on clean reps.";
-    case "sensor_today":
-      return value === "yes"
-        ? "Sensor on — extra feedback unlocked."
-        : "All good — plan works great without it.";
-    case "age_band":
-      return "Thanks — helps pace recovery.";
-    case "bodyweight":
-      return "Saved — good for dumbbell starts.";
+    case "goal_intent":
+    case "goal":
+      return "Goal captured — let's build around it.";
     default:
       return `Noted, ${name}.`;
   }
 }
 
+function parsePrimaryGoal(raw: string) {
+  const s = raw.toLowerCase();
+  if (/sport|performance|team/.test(s)) return { value: "sport", label: "Train for sport" } as const;
+  if (/rehab|recover|injur/.test(s)) return { value: "rehab", label: "Rehab / return" } as const;
+  if (/muscle|size|hypertrophy|bulk/.test(s)) return { value: "muscle", label: "Build muscle" } as const;
+  if (/strength|power|force/.test(s)) return { value: "strength", label: "Build strength" } as const;
+  if (/general|overall|feel better/.test(s)) return { value: "general", label: "General fitness" } as const;
+  return null;
+}
+
+function parseTrainingContext(raw: string) {
+  const s = raw.toLowerCase();
+  if (/^\s*(new|beginner)/.test(s) || /0-6/.test(s)) return { value: "new", label: "New" } as const;
+  if (/6.*(months|mo)|some|1-2/.test(s)) return { value: "some_experience", label: "Some experience" } as const;
+  if (/2-5|couple|solid|lifter/.test(s)) return { value: "solid_lifter", label: "Solid lifter" } as const;
+  if (/5\+|advanced|very|seasoned|veteran/.test(s))
+    return { value: "very_experienced", label: "Very experienced" } as const;
+  return null;
+}
+
+function parseLimitations(raw: string) {
+  const s = raw.toLowerCase();
+  const picks = new Set<string>();
+  Object.entries(LIMITATION_KEYWORDS).forEach(([key, token]) => {
+    if (token === "none") {
+      if (/none|no issues|all good|feeling fine/.test(s)) picks.add("none");
+    } else if (new RegExp(token).test(s)) {
+      picks.add(key);
+    }
+  });
+  if (!picks.size && /injur|pain|tweak|surgery/.test(s)) picks.add("other");
+  if (!picks.size) return null;
+  return { value: Array.from(picks), label: Array.from(picks).join(", ") } as const;
+}
+
+function parseEquipmentSession(raw: string): { value: EquipmentSession; label: string } | null {
+  const lower = raw.toLowerCase();
+  const equipment = new Set<EquipmentKind>();
+  Object.entries(EQUIPMENT_KEYWORDS).forEach(([kind, regex]) => {
+    if (regex.test(lower)) equipment.add(kind as EquipmentKind);
+  });
+
+  if (/garage|home/.test(lower) && equipment.has("barbell") && !equipment.has("rack")) {
+    equipment.add("rack");
+  }
+
+  const minutesMatch = lower.match(/(\d{2,3})\s*(min|minutes|m)/);
+  const sessionMinutes = minutesMatch ? Number.parseInt(minutesMatch[1], 10) : null;
+
+  if (!equipment.size && sessionMinutes == null) {
+    return null;
+  }
+
+  const value = {
+    equipment: Array.from(equipment),
+    session_minutes: sessionMinutes,
+  } satisfies EquipmentSession;
+
+  const parts: string[] = [];
+  if (value.equipment.length) parts.push(value.equipment.join(", "));
+  if (sessionMinutes != null) parts.push(`${sessionMinutes} min`);
+
+  return { value, label: parts.join(" · ") || raw };
+}
+
+function parseFrequencyCommitment(raw: string): { value: FrequencyCommitment; label: string } | null {
+  const lower = raw.toLowerCase();
+  const dayMatch = lower.match(/(\d)(?:\s*x|\s*days?|\s*per|\s*times?)/);
+  let days = dayMatch ? Number.parseInt(dayMatch[1], 10) : null;
+  if (!days && /four|4\+/.test(lower)) days = 4;
+  if (!days && /five/.test(lower)) days = 5;
+  if (!days && /six/.test(lower)) days = 6;
+  if (!days && /seven/.test(lower)) days = 7;
+  if (!days && /(three|3)/.test(lower)) days = 3;
+  if (!days && /(two|2)/.test(lower)) days = 2;
+  if (!days && /(one|1)/.test(lower)) days = 1;
+
+  const weekMatch = lower.match(/(\d{1,2})\s*(weeks?|wks?)/);
+  const focusWeeks = weekMatch ? Number.parseInt(weekMatch[1], 10) : null;
+
+  if (!days && focusWeeks == null) return null;
+
+  const value: FrequencyCommitment = {
+    days_per_week: days,
+    focus_weeks: focusWeeks,
+  };
+
+  const labelParts: string[] = [];
+  if (days) labelParts.push(`${days}×/week`);
+  if (focusWeeks) labelParts.push(`${focusWeeks} weeks`);
+
+  return { value, label: labelParts.join(" · ") || raw };
+}
+
+function parseBodyMetrics(raw: string) {
+  const lower = raw.toLowerCase();
+
+  const ageMatch = lower.match(/(\d{2})\s*(?:yo|yrs?|years?)/);
+  const age = ageMatch ? Number.parseInt(ageMatch[1], 10) : null;
+
+  let heightFt: number | null = null;
+  let heightIn: number | null = null;
+
+  const heightMatch = lower.match(/(\d)\s*(?:ft|'|feet)\s*(\d{1,2})?\s*(?:in|"|inches)?/);
+  if (heightMatch) {
+    heightFt = Number.parseInt(heightMatch[1], 10);
+    heightIn = heightMatch[2] ? Number.parseInt(heightMatch[2], 10) : 0;
+  } else {
+    const inchesOnly = lower.match(/(\d{2})\s*(?:in|"|inches)/);
+    if (inchesOnly) {
+      const total = Number.parseInt(inchesOnly[1], 10);
+      heightFt = Math.floor(total / 12);
+      heightIn = total % 12;
+    }
+  }
+
+  const weightMatch = lower.match(/(\d{2,3})\s*(?:lb|lbs|pounds?)/);
+  const weight = weightMatch ? Number.parseInt(weightMatch[1], 10) : null;
+
+  if (!age && heightFt == null && weight == null) return null;
+
+  return {
+    value: {
+      age: age ?? null,
+      height_ft: heightFt ?? null,
+      height_in: heightIn ?? null,
+      weight_lb: weight ?? null,
+    },
+    label: [
+      age ? `${age}y` : null,
+      heightFt != null ? `${heightFt}'${heightIn ?? 0}"` : null,
+      weight ? `${weight} lb` : null,
+    ]
+      .filter(Boolean)
+      .join(" · ") || raw,
+  } as const;
+}
+
+function parseBodyComposition(raw: string) {
+  const s = raw.toLowerCase();
+  if (/gain|build|bulk/.test(s)) return { value: "gain", label: "Gain" } as const;
+  if (/lose|cut|fat/.test(s)) return { value: "lose", label: "Lose" } as const;
+  if (/maintain|maint/.test(s)) return { value: "maintain", label: "Maintain" } as const;
+  if (/none|not/.test(s)) return { value: "none", label: "Not a priority" } as const;
+  return null;
+}
+
+function parseActivityRecovery(raw: string) {
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  return { value: trimmed, label: trimmed } as const;
+}
+
+function parseSpecificTarget(raw: string) {
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  return { value: trimmed, label: trimmed } as const;
+}
+
+function parseTrainingTime(raw: string) {
+  const s = raw.toLowerCase();
+  if (/morning|am|6|7|8|9/.test(s)) return { value: "morning", label: "Morning" } as const;
+  if (/midday|noon|11|12|1 pm|afternoon/.test(s)) return { value: "midday", label: "Midday" } as const;
+  if (/evening|pm|night|after work/.test(s)) return { value: "evening", label: "Evening" } as const;
+  if (/varies|depends|mixed/.test(s)) return { value: "varies", label: "Varies" } as const;
+  return null;
+}
+
+function parseExercisePreferences(raw: string) {
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  return { value: trimmed, label: trimmed } as const;
+}
+
 export function tryParseUserAnswer(id: QuestionId, raw: string) {
-  const s = raw.trim().toLowerCase();
+  const s = raw.trim();
   if (!s) return null;
+
   switch (id) {
     case "name":
-      return { value: raw.trim(), label: raw.trim() };
-    case "vibe":
-      if (/hype/.test(s)) return { value: "hype", label: "Hype" };
-      if (/calm|chill|relax/.test(s)) return { value: "calm", label: "Calm" };
-      if (/expert|tech|precise/.test(s)) return { value: "expert", label: "Expert" };
-      return null;
+      return { value: s, label: s } as const;
+    case "primary_goal":
+      return parsePrimaryGoal(s);
+    case "training_context":
+      return parseTrainingContext(s);
+    case "body_composition":
+      return parseBodyComposition(s);
+    case "limitations":
+      return parseLimitations(s);
+    case "sport_context":
+      return { value: s, label: s } as const;
+    case "equipment_session":
+      return parseEquipmentSession(s);
+    case "frequency_commitment":
+      return parseFrequencyCommitment(s);
+    case "body_metrics":
+      return parseBodyMetrics(s);
+    case "activity_recovery":
+      return parseActivityRecovery(s);
+    case "specific_target":
+      return parseSpecificTarget(s);
+    case "training_time":
+      return parseTrainingTime(s);
+    case "exercise_preferences":
+      return parseExercisePreferences(s);
+    case "goal_intent":
+      return parsePrimaryGoal(s);
     case "goal":
-      if (/strength|power|lower/.test(s))
-        return { value: "lower_body_strength", label: "Build lower-body strength" };
-      if (/muscle|size|hypertrophy/.test(s)) return { value: "build_muscle", label: "Build muscle" };
-      if (/fitness|general|health/.test(s))
-        return { value: "general_fitness", label: "General fitness" };
-      if (/rehab|injur|return/.test(s)) return { value: "rehab", label: "Return from injury" };
+      if (/strength|power|lower/.test(s.toLowerCase()))
+        return { value: "lower_body_strength", label: "Build lower-body strength" } as const;
+      if (/muscle|size|hypertrophy/.test(s.toLowerCase()))
+        return { value: "build_muscle", label: "Build muscle" } as const;
+      if (/fitness|general|health/.test(s.toLowerCase()))
+        return { value: "general_fitness", label: "General fitness" } as const;
+      if (/rehab|injur|return/.test(s.toLowerCase()))
+        return { value: "rehab", label: "Return from injury" } as const;
       return null;
     case "experience":
-      if (/new|beginner/.test(s)) return { value: "new", label: "New" };
-      if (/intermediate|some|few/.test(s)) return { value: "intermediate", label: "Intermediate" };
-      if (/advanced|experienced|elite/.test(s)) return { value: "advanced", label: "Advanced" };
+      if (/new|beginner/.test(s.toLowerCase()))
+        return { value: "new", label: "New" } as const;
+      if (/intermediate|some|few/.test(s.toLowerCase()))
+        return { value: "intermediate", label: "Intermediate" } as const;
+      if (/advanced|experienced|elite/.test(s.toLowerCase()))
+        return { value: "advanced", label: "Advanced" } as const;
       return null;
-    case "equipment": {
-      const picks: string[] = [];
-      if (/barbell|rack/.test(s)) picks.push("barbell_rack");
-      if (/dumbbell|db/.test(s)) picks.push("dumbbells");
-      if (/machine|leg ?press|hack/.test(s)) picks.push("machines");
-      if (/band/.test(s)) picks.push("bands");
-      if (/bodyweight|no equipment|none/.test(s)) picks.push("bodyweight");
-      if (picks.length) return { value: Array.from(new Set(picks)), label: picks.join(", ") };
-      return null;
-    }
+    case "equipment":
+      return parseEquipmentSession(s);
     case "session_length": {
-      const n = parseInt(s.match(/\d{2,3}/)?.[0] ?? "", 10);
-      if (n && [20, 30, 45, 60].some((x) => Math.abs(x - n) < 5)) return { value: n, label: `${n} min` };
+      const minutes = Number.parseInt(s.match(/\d{2,3}/)?.[0] ?? "", 10);
+      if (minutes) return { value: minutes, label: `${minutes} min` } as const;
       return null;
     }
     case "frequency": {
-      const n = parseInt(s.match(/\b[1-4]\b/)?.[0] ?? "", 10);
-      if (n) return { value: n, label: String(n) };
-      if (/four|4\+/.test(s)) return { value: 4, label: "4+" };
+      const match = s.match(/\b[1-6]\b/);
+      if (match) return { value: Number.parseInt(match[0], 10), label: match[0] } as const;
+      if (/four|4\+/.test(s.toLowerCase())) return { value: 4, label: "4" } as const;
       return null;
     }
-    case "constraints": {
-      const picks: string[] = [];
-      if (/none|no issues|all good/.test(s)) picks.push("none");
-      if (/knee/.test(s)) picks.push("knees");
-      if (/hip/.test(s)) picks.push("hips");
-      if (/back|lumbar/.test(s)) picks.push("low_back");
-      if (/other/.test(s)) picks.push("other");
-      if (picks.length) return { value: Array.from(new Set(picks)), label: picks.join(", ") };
-      return null;
-    }
+    case "constraints":
+      return parseLimitations(s);
     case "intensity_ref":
-      if (/rpe/.test(s)) return { value: "rpe", label: "RPE" };
-      if (/%|percent/.test(s)) return { value: "percent", label: "%1RM" };
-      if (/unsure|you choose|idk|not sure/.test(s)) return { value: "unsure", label: "Not sure" };
+      if (/rpe/.test(s.toLowerCase())) return { value: "rpe", label: "RPE" } as const;
+      if (/%|percent/.test(s.toLowerCase())) return { value: "percent", label: "%1RM" } as const;
+      if (/unsure|you choose|idk|not sure/.test(s.toLowerCase()))
+        return { value: "unsure", label: "Not sure" } as const;
       return null;
     case "sensor_today":
-      if (/yes|yep|on|sure/.test(s)) return { value: "yes", label: "Yes" };
-      if (/no|not today|off/.test(s)) return { value: "no", label: "Not today" };
+      if (/yes|yep|on|sure/.test(s.toLowerCase())) return { value: "yes", label: "Yes" } as const;
+      if (/no|not today|off/.test(s.toLowerCase())) return { value: "no", label: "Not today" } as const;
       return null;
     case "age_band":
-      if (/(18|19|2[0-4])/.test(s)) return { value: "18_24", label: "18–24" };
-      if (/(2[5-9]|3[0-4])/.test(s)) return { value: "25_34", label: "25–34" };
-      if (/(3[5-9]|4[0-4])/.test(s)) return { value: "35_44", label: "35–44" };
-      if (/(4[5-9]|5[0-4])/.test(s)) return { value: "45_54", label: "45–54" };
-      if (/(55|6\d|65)/.test(s)) return { value: "55_plus", label: "55+" };
-      if (/prefer not|unspecified|skip/.test(s))
-        return { value: "unspecified", label: "Prefer not to say" };
+    case "bodyweight":
       return null;
-    case "bodyweight": {
-      const n = parseFloat(s.match(/\d{2,3}(?:\.\d+)?/)?.[0] ?? "");
-      if (!Number.isNaN(n)) return { value: n, label: String(n) };
-      return null;
-    }
     default:
       return null;
   }
@@ -367,19 +649,51 @@ export function tryParseUserAnswer(id: QuestionId, raw: string) {
 
 export function getSuggestionsFor(id: QuestionId): string[] {
   switch (id) {
-    case "name":
-      return [];
-    case "vibe":
-      return ["Hype", "Calm", "Expert"];
-    case "goal":
+    case "primary_goal":
       return [
-        "Lower-body strength",
-        "Build muscle",
+        "Build strength",
+        "Add muscle size",
+        "Train for a sport",
+        "Rehab / return",
         "General fitness",
-        "Rehab / returning",
       ];
-    case "experience":
-      return ["New", "Intermediate", "Advanced"];
+    case "training_context":
+      return [
+        "New (0-6 months)",
+        "Some experience (6mo-2yrs)",
+        "Solid lifter (2-5 years)",
+        "Very experienced (5+ years)",
+      ];
+    case "body_composition":
+      return ["Gain muscle", "Lose fat", "Maintain", "Not a priority"];
+    case "equipment_session":
+      return [
+        "Barbell, rack, 45 minutes",
+        "Dumbbells + bands, 30 minutes",
+        "Machines only, 60 minutes",
+        "Bodyweight only, 25 minutes",
+      ];
+    case "frequency_commitment":
+      return [
+        "2 days per week",
+        "3 days per week",
+        "4 days per week",
+        "5 days per week",
+      ];
+    case "limitations":
+      return ["None", "Knees", "Hips", "Low back", "Shoulders"];
+    case "sport_context":
+      return ["Basketball guard", "Soccer midfield", "Track sprinter", "Powerlifting" ];
+    case "training_time":
+      return ["Morning", "Midday", "Evening", "Varies"];
+    case "exercise_preferences":
+      return ["Love squats", "Prefer machines", "Avoid lunges", "Free weights"];
+    case "body_metrics":
+      return [
+        "32 years old, 5ft 10in, 178 lb",
+        "27 years old, 5ft 6in, 145 lb",
+        "41 years old, 6ft 1in, 205 lb",
+      ];
     case "equipment":
       return [
         "Barbell rack and dumbbells",
@@ -392,16 +706,13 @@ export function getSuggestionsFor(id: QuestionId): string[] {
       return ["20 minutes", "30 minutes", "45 minutes", "60 minutes"];
     case "frequency":
       return ["2 days", "3 days", "4 days"];
-    case "constraints":
-      return ["None", "Knees", "Hips", "Low back"];
-    case "intensity_ref":
-      return ["RPE", "%1RM", "You choose"];
-    case "sensor_today":
-      return ["Yes", "No"];
-    case "age_band":
-      return ["18-24", "25-34", "35-44", "45-54", "55+"];
-    case "bodyweight":
-      return ["150 lb", "180 lb", "200 lb"];
+    case "goal":
+      return [
+        "Lower-body strength",
+        "Build muscle",
+        "General fitness",
+        "Rehab / returning",
+      ];
     default:
       return [];
   }

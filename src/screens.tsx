@@ -483,38 +483,6 @@ interface TrainingScreenProps {
     onSkipExercise: () => void;
     onToggleSuppressStops: (on: boolean) => void;
     coachPrefs: CoachPrefs;
-    awaitingEndSetConfirm: boolean;
-    undoInfo: { label: string } | null;
-    onUndo: () => void;
-    restSummary: { preReadiness: number | null; postReadiness: number | null; weightAdjustmentMessage: string | null; nextWeightAdjustment: number | null; fatigueLimited: boolean } | null;
-    coachOutput: CoachOutput | null;
-    coachMessage: CoachFinalMessage | null;
-    coachMessageStatus: CoachInsightStatus;
-}
-interface TrainingScreenProps {
-    onEnd: () => void;
-    onSimulateRep: (peak: number) => void;
-    sessionData: ReadinessPrediction | null;
-    onEndSet: () => void;
-    onboardStep: number;
-    onSetOnboardStep: (step: number) => void;
-    sessionPhase: 'active' | 'set-summary' | 'end';
-    onDismissTutorial: () => void;
-    restDuration: number;
-    onResumeSet: () => void;
-    recoveryDirective: string;
-    preSetReadiness: number | null;
-    completedSetsCount: number;
-    getReadinessData: (score: number | null) => { color: string; word: string };
-    isCalibrationSet: boolean;
-    stopSuggestion: StopSuggestion | null;
-    suggestionKey: string | null;
-    onContinueSuggestion: (key: string) => void;
-    onAcceptSuggestion: (key: string) => void;
-    onSkipSet: () => void;
-    onSkipExercise: () => void;
-    onToggleSuppressStops: (on: boolean) => void;
-    coachPrefs: CoachPrefs;
     undoInfo: { label: string } | null;
     onUndo: () => void;
     restSummary: { preReadiness: number | null; postReadiness: number | null; weightAdjustmentMessage: string | null; nextWeightAdjustment: number | null; fatigueLimited: boolean } | null;

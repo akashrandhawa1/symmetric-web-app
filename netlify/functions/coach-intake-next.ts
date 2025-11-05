@@ -438,16 +438,46 @@ function buildPlanContext(answers: Record<string, any>, fallback: WrapTurn) {
 
   return {
     name: typeof answers.name === "string" ? answers.name.trim() : "",
+
+    // Goal & motivation
     primary_goal: answers.primary_goal ?? answers.goal_intent ?? answers.goal ?? null,
-    training_context: answers.training_context ?? answers.experience_level ?? answers.experience ?? null,
-    equipment_session: equipSession,
-    frequency_commitment: freqCommitment,
-    body_metrics: bodyMetrics,
-    limitations: answers.limitations ?? answers.constraints ?? null,
-    sport_context: answers.sport_context ?? answers.sport_role ?? null,
+    specific_target: answers.specific_target ?? null,
+    body_composition: answers.body_composition ?? null,
+    goal_intent: answers.goal_intent ?? null,
     motivation: answers.motivation ?? null,
     timeline: answers.timeline ?? null,
+
+    // Current training state
+    training_context: answers.training_context ?? answers.experience_level ?? answers.experience ?? null,
+    baseline_fitness: answers.baseline_fitness ?? null,
+    age_range: answers.age_range ?? null,
+    experience_level: answers.experience_level ?? null,
+    confidence: answers.form_confidence ?? null,
+
+    // Equipment & environment
+    equipment_session: equipSession,
+    environment: answers.environment ?? null,
+    equipment: answers.equipment ?? null,
+    training_time: answers.training_time ?? null,
+
+    // Schedule commitment
+    frequency_commitment: freqCommitment,
+
+    // Body metrics (exact values)
+    body_metrics: bodyMetrics,
+
+    // Safety & recovery
+    limitations: answers.limitations ?? answers.constraints ?? null,
+    constraints: answers.constraints ?? null,
+    past_injuries: answers.past_injuries ?? null,
+    activity_recovery: answers.activity_recovery ?? null,
+
+    // Sport / preferences
+    sport_context: answers.sport_context ?? answers.sport_role ?? null,
+    exercise_preferences: answers.exercise_preferences ?? null,
     preferences: answers.preferences ?? null,
+    program_style: answers.program_style ?? null,
+
     branch: resolveIntakeBranch(undefined, answers),
     schedule: {
       days_per_week:
@@ -489,10 +519,22 @@ async function generateWrapWithGemini(answers: Record<string, any>, fallback: Wr
     "- Goal must be one of the allowed enum values.",
     "- Stay upbeat, precise, and avoid marketing fluff.",
     "",
+    "KEY PERSONALIZATION FACTORS (PHASE 1):",
+    "- Body Composition: If 'gain', emphasize volume and progressive overload. If 'lose', balance intensity with recovery. If 'maintain/recomp', focus on strength gains.",
+    "- Baseline Fitness: If user struggles with basic movements, start with foundational progressions and movement prep.",
+    "- Age Range: For 46+, emphasize recovery time, joint-friendly variations, and longer deload cycles.",
+    "- Activity & Recovery: If high stress or poor sleep (<6hrs), reduce volume by 20-30% and add extra rest.",
+    "- Limitations: Always protect flagged areas with modified ROM, exercise substitutions, or controlled tempos.",
+    "",
+    "PHASE 2 PERSONALIZATION (if available):",
+    "- Specific Target: If user has a measurable goal (e.g., 'squat 315lbs'), reverse-engineer periodization to peak at that target. Build progressive overload cycles that lead to the specific lift.",
+    "- Training Time: If 'morning', place CNS-demanding work early when fresh. If 'evening', consider fatigue from work day. If 'varies', use autoregulation.",
+    "- Exercise Preferences: If user loves certain movements, program them frequently. If user hates certain movements, substitute with similar stimulus. Never force hated movements—adherence > perfection.",
+    "",
     "Intake answers:",
     JSON.stringify(context, null, 2),
     "",
-    "Reference plan defaults (use them unless you have a compelling reason to tweak slightly):",
+    "Reference plan defaults (use them unless you have a compelling reason to tweak based on the personalization factors above):",
     JSON.stringify(planSample, null, 2),
   ].join("\n");
 

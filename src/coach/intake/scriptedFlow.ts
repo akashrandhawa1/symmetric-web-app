@@ -5,16 +5,26 @@ export type IntakeBranch = "athlete" | "lifestyle";
 
 type CoachSCC = { suggest: string; confirm: string; compensate: string };
 
-export const SCRIPTED_TOPIC_SEQUENCE: Topic[] = [
+const CORE_TOPICS: Topic[] = [
   "name",
   "primary_goal",
   "training_context",
   "equipment_session",
   "frequency_commitment",
   "body_metrics",
+];
+
+const OPTIONAL_TOPICS: Topic[] = [
   "limitations",
   "sport_context",
-  // Legacy topics retained for backward compatibility with stored profiles
+  "body_composition",
+  "baseline_fitness",
+  "age_range",
+  "activity_recovery",
+  "specific_target",
+  "training_time",
+  "exercise_preferences",
+  // Legacy support
   "goal_intent",
   "experience_level",
   "equipment",
@@ -22,6 +32,8 @@ export const SCRIPTED_TOPIC_SEQUENCE: Topic[] = [
   "session_length",
   "constraints",
 ];
+
+export const SCRIPTED_TOPIC_SEQUENCE: Topic[] = [...CORE_TOPICS, ...OPTIONAL_TOPICS];
 
 export const SCC_SEEDS: Record<
   "goal" | "experience" | "safety" | "environment" | "schedule" | "basics",
@@ -37,13 +49,20 @@ export const SCC_SEEDS: Record<
 
 export const PERSONA_LINES: Record<Topic | "default", string> = {
   name: "Knowing your name keeps coaching personal",
-  primary_goal: "Dialling the mission keeps training sharp",
+  primary_goal: "Clear goals drive smart programming",
   training_context: "Experience level shapes exercise selection",
   equipment_session: "Setup and time define each session",
   frequency_commitment: "Schedule anchors the plan",
   body_metrics: "Body stats calibrate loading and cues",
   limitations: "Protecting weak links keeps you training",
   sport_context: "Sport context lets us tailor transfer",
+  body_composition: "Body comp targets align intensity",
+  baseline_fitness: "Movement baseline guides our start",
+  age_range: "Age informs recovery cadence",
+  activity_recovery: "Recovery habits steer load management",
+  specific_target: "Specific targets enable precision",
+  training_time: "Training time guides CNS demand",
+  exercise_preferences: "Movement preferences boost adherence",
   goal_intent: "Clear goals keep training sharp",
   experience_level: "Matching intensity avoids overwhelm",
   equipment: "Tools define how we load intent",
@@ -53,50 +72,19 @@ export const PERSONA_LINES: Record<Topic | "default", string> = {
   default: "Let's keep building your blueprint",
 };
 
-export const TOPIC_PHASE: Record<Topic, string> = {
-  name: "rapport",
-  primary_goal: "goal",
-  training_context: "experience",
-  equipment_session: "environment",
-  frequency_commitment: "schedule",
-  body_metrics: "basics",
-  limitations: "safety",
-  sport_context: "focus",
-  goal_intent: "goal",
-  experience_level: "experience",
-  equipment: "environment",
-  frequency: "schedule",
-  session_length: "schedule",
-  constraints: "safety",
-  motivation: "goal",
-  timeline: "goal",
-  baseline_strength: "experience",
-  baseline_conditioning: "experience",
-  sleep_stress: "recovery",
-  soreness_pattern: "recovery",
-  preferences: "preferences",
-  coach_vibe: "preferences",
-  goal_detail: "goal",
-  age_range: "basics",
-  height_cm: "basics",
-  weight_kg: "basics",
-  program_style: "preferences",
-  mobility_limitations: "safety",
-  soreness_pain: "safety",
-  sensor_today: "environment",
-  sport_role: "focus",
-  sport_position: "focus",
-  occupation_type: "focus",
-  daily_activity: "focus",
-};
-
 export const CHIPS_BY_TOPIC: Partial<Record<Topic, string[]>> = {
   primary_goal: [
     "Build max strength",
-    "Add muscle size",
+    "Add muscle",
     "Train for a sport",
     "Rehab / return",
     "General fitness",
+  ],
+  body_composition: [
+    "Gain muscle",
+    "Lose fat",
+    "Maintain",
+    "Not a priority",
   ],
   training_context: [
     "New (0-6 months)",
@@ -111,13 +99,66 @@ export const CHIPS_BY_TOPIC: Partial<Record<Topic, string[]>> = {
     "Bodyweight only • 25 min",
   ],
   frequency_commitment: [
-    "2 days / week",
-    "3 days / week",
-    "4 days / week",
-    "5 days / week",
+    "2 days per week",
+    "3 days per week",
+    "4 days per week",
+    "5 days per week",
   ],
   limitations: ["None", "Knees", "Hips", "Low back", "Shoulders"],
-  sport_context: ["Basketball guard", "Soccer midfield", "Track sprinter", "Powerlifting"],
+  sport_context: ["Basketball guard", "Soccer midfield", "Track sprinter", "Powerlifting" ],
+  training_time: ["Morning", "Midday", "Evening", "Varies"],
+  exercise_preferences: ["Love squats", "Prefer machines", "Avoid lunges", "Free weights"],
+  goal_intent: ["strength", "muscle", "general", "rehab"],
+  equipment: ["barbell", "dumbbells", "machines", "bands", "bodyweight"],
+  frequency: ["1", "2", "3", "4+"],
+  session_length: ["20", "30", "45", "60+"],
+  constraints: ["knees", "hips", "low back", "shoulders", "none"],
+};
+
+export const TOPIC_PHASE: Record<Topic, string> = {
+  name: "rapport",
+  primary_goal: "goal",
+  specific_target: "goal",
+  body_composition: "goal",
+  training_context: "experience",
+  baseline_fitness: "experience",
+  age_range: "basics",
+  limitations: "safety",
+  activity_recovery: "recovery",
+  sport_context: "focus",
+  training_time: "schedule",
+  exercise_preferences: "preferences",
+  equipment_session: "environment",
+  frequency_commitment: "schedule",
+  body_metrics: "basics",
+  goal_intent: "goal",
+  motivation: "goal",
+  timeline: "goal",
+  constraints: "safety",
+  past_injuries: "safety",
+  baseline_strength: "experience",
+  baseline_conditioning: "experience",
+  experience_level: "experience",
+  form_confidence: "experience",
+  environment: "environment",
+  equipment: "environment",
+  frequency: "schedule",
+  session_length: "schedule",
+  sleep_stress: "recovery",
+  soreness_pattern: "recovery",
+  preferences: "preferences",
+  coach_vibe: "preferences",
+  goal_detail: "goal",
+  height_cm: "basics",
+  weight_kg: "basics",
+  program_style: "preferences",
+  mobility_limitations: "safety",
+  soreness_pain: "safety",
+  sensor_today: "environment",
+  sport_role: "focus",
+  sport_position: "focus",
+  occupation_type: "focus",
+  daily_activity: "focus",
 };
 
 const createTurn = (topic: Topic, question: string, chips?: string[]): NextAction => {
@@ -127,7 +168,7 @@ const createTurn = (topic: Topic, question: string, chips?: string[]): NextActio
     topic === "frequency_commitment" ? SCC_SEEDS.schedule :
     topic === "training_context" ? SCC_SEEDS.experience :
     topic === "limitations" ? SCC_SEEDS.safety :
-    topic === "primary_goal" ? SCC_SEEDS.goal :
+    topic === "primary_goal" || topic === "specific_target" || topic === "body_composition" ? SCC_SEEDS.goal :
     SCC_SEEDS.goal;
 
   return {
@@ -208,14 +249,14 @@ export const scriptedNextAction = (answers: Record<string, any>, branch: IntakeB
   if (!hasValue(getFrequencyCommitment(answers))) {
     return createTurn(
       "frequency_commitment",
-      "How many days per week can you train, and for how many weeks are you planning?"
+      "How many days per week can you train, and for how many weeks?"
     );
   }
 
   if (!hasValue(getBodyMetrics(answers))) {
     return createTurn(
       "body_metrics",
-      "Quick stats check—what’s your age, height (feet/inches), and current weight in pounds?"
+      "Quick stats—age, height (feet/inches), and current weight in pounds?"
     );
   }
 
@@ -225,6 +266,26 @@ export const scriptedNextAction = (answers: Record<string, any>, branch: IntakeB
 
   if (requiresSportContext(goal) && !hasValue(answers.sport_context)) {
     return createTurn("sport_context", "Which sport or position should I tailor this around?", CHIPS_BY_TOPIC.sport_context);
+  }
+
+  if (!hasValue(answers.body_composition)) {
+    return createTurn("body_composition", "Body comp focus—gain, lose, maintain, or not a priority?", CHIPS_BY_TOPIC.body_composition);
+  }
+
+  if (!hasValue(answers.activity_recovery)) {
+    return createTurn("activity_recovery", "How are daily activity, sleep, and stress treating you lately?");
+  }
+
+  if (!hasValue(answers.specific_target)) {
+    return createTurn("specific_target", "Any specific target we should hit (numbers, milestones, events)?");
+  }
+
+  if (!hasValue(answers.training_time)) {
+    return createTurn("training_time", "When do you usually train—morning, midday, evening, or varies?", CHIPS_BY_TOPIC.training_time);
+  }
+
+  if (!hasValue(answers.exercise_preferences)) {
+    return createTurn("exercise_preferences", "Any movements you love or want me to avoid?", CHIPS_BY_TOPIC.exercise_preferences);
   }
 
   return buildWrapAction(answers);
@@ -237,19 +298,19 @@ export const buildWrapAction = (answers: Record<string, any>): NextAction => ({
 
 const buildWrap = (answers: Record<string, any>): WrapTurn => {
   const goal = normalisePrimaryGoal(answers);
-  const freq =
-    typeof answers.frequency_commitment?.days_per_week === "number"
-      ? answers.frequency_commitment.days_per_week
-      : typeof answers.frequency === "number"
-      ? answers.frequency
-      : DEFAULT_WRAP.days_per_week;
+  const freqCommitment = answers.frequency_commitment ?? null;
+  const equipSession = answers.equipment_session ?? null;
+  const daysPerWeek = typeof freqCommitment?.days_per_week === "number"
+    ? Math.min(Math.max(freqCommitment.days_per_week, 1), 6)
+    : typeof answers.frequency === "number"
+    ? Math.min(Math.max(answers.frequency, 1), 6)
+    : DEFAULT_WRAP.days_per_week;
 
-  const sessionMinutes =
-    typeof answers.equipment_session?.session_minutes === "number"
-      ? answers.equipment_session.session_minutes
-      : typeof answers.session_length === "number"
-      ? answers.session_length
-      : DEFAULT_WRAP.session_length_min;
+  const sessionMinutes = typeof equipSession?.session_minutes === "number"
+    ? equipSession.session_minutes
+    : typeof answers.session_length === "number"
+    ? answers.session_length
+    : DEFAULT_WRAP.session_length_min;
 
   const planGoal: WrapTurn["plan_summary"]["goal"] = goal.includes("muscle")
     ? "muscle"
@@ -259,8 +320,8 @@ const buildWrap = (answers: Record<string, any>): WrapTurn => {
     ? "lower-body strength"
     : "general";
 
-  const weeks = typeof answers.frequency_commitment?.focus_weeks === "number"
-    ? Math.min(Math.max(answers.frequency_commitment.focus_weeks, 2), 16)
+  const weeks = typeof freqCommitment?.focus_weeks === "number"
+    ? Math.min(Math.max(freqCommitment.focus_weeks, 2), 16)
     : DEFAULT_WRAP.weeks;
 
   const constraints = (() => {
@@ -281,7 +342,7 @@ const buildWrap = (answers: Record<string, any>): WrapTurn => {
     plan_summary: {
       goal: planGoal,
       weeks,
-      days_per_week: Math.min(Math.max(freq ?? DEFAULT_WRAP.days_per_week, 1), 6),
+      days_per_week: daysPerWeek,
       session_length_min: Math.min(Math.max(sessionMinutes ?? DEFAULT_WRAP.session_length_min, 20), 120),
       constraints_notes: constraints,
       blocks: DEFAULT_WRAP.blocks,
@@ -296,8 +357,8 @@ const DEFAULT_WRAP: WrapTurn["plan_summary"] = {
   session_length_min: 45,
   constraints_notes: "No constraints flagged",
   blocks: [
-    { name: "Heavy Lower Push", objective: "Prime quads and glutes with a leading compound" },
-    { name: "Posterior Chain", objective: "Balance with hip hinge and hamstring volume" },
-    { name: "Accessory + Core", objective: "Polish stability and knee-friendly accessory work" },
+    { name: "Heavy Lower Push", objective: "Prime quads and glutes with a leading compound." },
+    { name: "Posterior Chain", objective: "Balance with hip hinge and hamstring volume." },
+    { name: "Accessory + Core", objective: "Polish stability and knee-friendly accessory work." },
   ],
 };
