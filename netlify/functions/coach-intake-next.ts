@@ -45,10 +45,12 @@ const SYSTEM_PROMPT = [
   "Every response must be STRICT JSON using one of the allowed shapes.",
   "",
   "Rules:",
+  "- Follow the 7-question blueprint: name → primary_goal → training_context → equipment_session → frequency_commitment → body_metrics → context follow-up (limitations or sport_context).",
   "- Persona line ≤12 words explaining why the topic matters.",
   "- Provide SCC each turn: Suggest ≤8 words, Confirm ≤6 words, Compensate is principle-only.",
   "- Ask exactly one question ≤18 words, one sentence, question must come last.",
-  "- NEVER prescribe exercises, sets, reps, %1RM, RPE, rest, kg, or lb.",
+  "- When collecting body_metrics demand exact numbers (age, feet/inches, pounds).",
+  "- NEVER prescribe exercises, sets, reps, %1RM, RPE, rest, kg, or lb loads.",
   "- NEVER ask for coach vibe or tone (the server controls it).",
   "- If chips are provided, reference that quick taps are available.",
   "- Use the provided phase context to keep the conversation tight.",
@@ -430,25 +432,37 @@ const normaliseBlock = (
 };
 
 function buildPlanContext(answers: Record<string, any>, fallback: WrapTurn) {
+  const freqCommitment = answers.frequency_commitment ?? null;
+  const equipSession = answers.equipment_session ?? null;
+  const bodyMetrics = answers.body_metrics ?? null;
+
   return {
     name: typeof answers.name === "string" ? answers.name.trim() : "",
-    goal_intent: answers.goal_intent ?? null,
+    primary_goal: answers.primary_goal ?? answers.goal_intent ?? answers.goal ?? null,
+    training_context: answers.training_context ?? answers.experience_level ?? answers.experience ?? null,
+    equipment_session: equipSession,
+    frequency_commitment: freqCommitment,
+    body_metrics: bodyMetrics,
+    limitations: answers.limitations ?? answers.constraints ?? null,
+    sport_context: answers.sport_context ?? answers.sport_role ?? null,
     motivation: answers.motivation ?? null,
     timeline: answers.timeline ?? null,
-    environment: answers.environment ?? null,
-    equipment: answers.equipment ?? null,
-    experience_level: answers.experience_level ?? null,
-    confidence: answers.form_confidence ?? null,
-    constraints: answers.constraints ?? null,
-    past_injuries: answers.past_injuries ?? null,
-    schedule: {
-      days_per_week: fallback.plan_summary.days_per_week,
-      session_length_min: fallback.plan_summary.session_length_min,
-      weeks: fallback.plan_summary.weeks,
-    },
     preferences: answers.preferences ?? null,
-    program_style: answers.program_style ?? null,
     branch: resolveIntakeBranch(undefined, answers),
+    schedule: {
+      days_per_week:
+        typeof freqCommitment?.days_per_week === "number"
+          ? freqCommitment.days_per_week
+          : fallback.plan_summary.days_per_week,
+      session_length_min:
+        typeof equipSession?.session_minutes === "number"
+          ? equipSession.session_minutes
+          : fallback.plan_summary.session_length_min,
+      weeks:
+        typeof freqCommitment?.focus_weeks === "number"
+          ? freqCommitment.focus_weeks
+          : fallback.plan_summary.weeks,
+    },
   };
 }
 
@@ -469,6 +483,7 @@ async function generateWrapWithGemini(answers: Record<string, any>, fallback: Wr
     "Guidelines:",
     "- Coach intro: conversational, ≤55 words, mention the user's name every 2–3 turns when available.",
     "- Plan must honour the supplied schedule (days/week, session minutes, weeks).",
+    "- Leverage primary_goal, training_context, equipment_session, frequency_commitment, and body_metrics when crafting the summary.",
     "- Keep blocks between 2 and 4. Each objective is 1 sentence describing focus and key movements. Avoid explicit set/rep prescriptions.",
     "- If constraints exist, highlight how the plan protects them; otherwise say 'No constraints flagged'.",
     "- Goal must be one of the allowed enum values.",

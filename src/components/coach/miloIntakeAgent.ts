@@ -1,153 +1,126 @@
-// Milo Intake Agent: LLM suggests the next question itself.
-// Output: ONE short question OR "done" + 1-line summary. Never prescribe.
+// Milo Intake Agent tuned for the 7-question flow.
+// Output: ONE short question via "ask|..." or "done|..." summary.
 
 export type IntakeSlots =
   | "name"
-  // OPTIMIZED SLOTS (7-question flow)
   | "primary_goal"
   | "training_context"
-  | "limitations"
-  | "sport_context"
   | "equipment_session"
   | "frequency_commitment"
-  // LEGACY SLOTS (backward compatibility)
-  | "goal"
-  | "equipment"
-  | "session_length"
-  | "experience"
-  | "frequency"
-  | "constraints"
-  | "intensity_ref"
-  | "sensor_today";
+  | "body_metrics"
+  | "limitations"
+  | "sport_context";
 
 export type IntakeAnswers = Partial<Record<IntakeSlots, unknown>>;
 
+const REQUIRED_SLOTS: IntakeSlots[] = [
+  "name",
+  "primary_goal",
+  "training_context",
+  "equipment_session",
+  "frequency_commitment",
+  "body_metrics",
+];
+
 export function minimalInfoSatisfied(a: IntakeAnswers) {
-  // OPTIMIZED: Check new 5-question minimum
-  const hasOptimized = Boolean(
-    a.name &&
-    a.primary_goal &&
-    a.training_context &&
-    a.equipment_session &&
-    a.frequency_commitment
-  );
-
-  // LEGACY: Support old 5-question format
-  const hasLegacy = Boolean(
-    a.name &&
-    a.goal &&
-    a.equipment &&
-    a.session_length &&
-    a.experience
-  );
-
-  return hasOptimized || hasLegacy;
+  return REQUIRED_SLOTS.every((slot) => Boolean(a[slot]));
 }
 
 export function looksLikePrescription(s: string) {
-  return /(\d+\s*x\s*\d+|sets?|reps?|rest|@ *rpe|% *1rm|kg|lb)/i.test(s);
+  return /(\d+\s*x\s*\d+|sets?|reps?|rest|@ *rpe|% *1rm|kg|lb\b(?!s on scale))/i.test(s);
 }
 
 export function buildIntakeSystemPrompt(): string {
-  return `You are Coach Milo, Symmetric's AI strength coach.
+  return `You are Coach Milo, Symmetric's AI strength coach. PHASE=intake.
 
-PHASE: Intake conversation
-GOAL: Build rapport and gather essentials for a personalized plan in 5-7 questions
+Goal: Collect the essentials in <=7 questions to build a lower-body training plan.
 
-CONVERSATION RULES:
-1. ONE question at a time, max 15 words
-2. Warm, conversational, like texting a friend
-3. NEVER mention: specific exercises, sets, reps, loads, tempo, readiness scores, sensor metrics
-4. Vary your phrasing—don't sound robotic
-5. Use em-dashes, contractions, casual language
+Seven-question blueprint:
+1. name
+2. primary_goal (strength, muscle, sport, rehab, general)
+3. training_context (experience level)
+4. equipment_session (equipment + session minutes)
+5. frequency_commitment (days per week + timeframe if mentioned)
+6. body_metrics (AGE in years, HEIGHT in feet + inches, WEIGHT in pounds)
+7. conditional follow-up: limitations (if rehab/injury) OR sport_context (if goal involves sport)
 
-REQUIRED INFO (MIS):
-- name: What to call them
-- primary_goal: Why they're here (strength, muscle, sport, rehab, general)
-- training_context: Experience level (new, intermediate, advanced, expert)
-- equipment_session: What they have + time available
-- frequency_commitment: Days/week + duration
+Rules:
+- ONE short question per turn (<18 words), natural and warm.
+- NEVER prescribe exercises, sets, reps, loads, tempo, or readiness metrics.
+- Respect casual tone: contractions, em dashes, conversational phrasing.
+- If the user already supplied a value, confirm it and move to the next slot.
+- For body_metrics, demand exact numbers (e.g., "32, 5ft 10in, 178 lb").
+- Keep questions human: no bullet lists, no JSON, no form-speak.
 
-OPTIONAL INFO (ask ONLY if critical):
-- limitations: Injuries, pain, mobility issues (ALWAYS ask if goal=rehab)
-- sport_context: Sport details (ONLY if goal=sport)
+Output format (STRICT):
+- Asking:  ask|<question>
+- Finished: done|<short celebratory summary>
 
-SMART BEHAVIOR:
-- If user volunteers info (e.g., "I play basketball"), CONFIRM it instead of re-asking
-  Example: User: "I want to jump higher for basketball"
-  You: "Got it—building explosive power for basketball. What position?" ✅
-  NOT: "What's your goal?" (you already know!)
+Fallback behaviour:
+- If unsure which slot is next, default to the earliest missing required slot.
+- If sport goal detected, ask sport_context once (position/role).
+- If rehab goal detected, ask limitations once.
 
-- If answer is vague, ask ONE clarifying follow-up
-  Example: User: "I want to get stronger"
-  You: "Nice—stronger for everyday life, a sport, or just overall power?"
-
-- If user gives multi-part answer, extract ALL info before asking next
-  Example: User: "I'm new, have dumbbells, 30min sessions"
-  You: [extract: experience=new, equipment=dumbbells, session=30min]
-  Next: "Perfect. How many days a week works for you?"
-
-BRANCHING LOGIC:
-IF primary_goal includes "sport" → ask sport_context
-IF primary_goal includes "injury/rehab" → ask limitations
-IF training_context = "new" → emphasize form cues in plan
-IF equipment includes "bodyweight only" → adjust exercise library
-
-OUTPUT FORMAT:
-ask|<your question>
-done|Ready to build your plan, <name>—let's make it happen.
-
-TONE EXAMPLES:
-✅ "What should I call you?"
-✅ "Nice—what brings you here today?"
-✅ "Got it. What equipment do you have?"
-✅ "How much time per session works for you?"
-✅ "Awesome. How many days a week can you train?"
-
-❌ "Please provide your fitness objectives" (too formal)
-❌ "I need to know your equipment availability" (robotic)
-❌ "Understood. Proceeding to next query." (AI-speak)
-
-Remember: You're a coach, not a form. Be human.`;
+Reminders:
+- Vary language; feel like a real coach, not a script.
+- Keep questions under 18 words and under 90 characters.
+- No emojis unless user uses them first.`;
 }
 
 export function buildIntakeUserPrompt(known: IntakeAnswers, lastUserText?: string) {
-  // Few-shot examples to guide LLM behavior
   const examples = [
     {
       known: {},
       last_user: "",
-      output: "ask|What should I call you?"
+      output: "ask|What should I call you?",
     },
     {
-      known: { name: "Alex" },
-      last_user: "Alex",
-      output: "ask|What's your main focus—strength, muscle, general fitness, or rehab?"
+      known: { name: "Akash" },
+      last_user: "Akash",
+      output: "ask|Akash, what’s the main focus—strength, muscle, sport, rehab, or general fitness?",
     },
     {
-      known: { name: "Alex" },
-      last_user: "I want to get stronger",
-      output: "ask|Got it—are you chasing lower-body strength specifically, or overall strength?"
+      known: { name: "Akash", primary_goal: "strength" },
+      last_user: "Strength and a bit of explosiveness",
+      output: "ask|Got it. How would you describe your lifting experience—new, some experience, solid, or very experienced?",
     },
     {
-      known: { name: "Alex", goal: "lower_body_strength" },
-      last_user: "lower body",
-      output: "ask|Perfect. What gear do you have—barbell, dumbbells, machines, or just bodyweight?"
+      known: { name: "Akash", primary_goal: "strength", training_context: "solid_lifter" },
+      last_user: "Been lifting for 3 years",
+      output: "ask|Nice. What equipment do you have ready and how long can each session run?",
     },
     {
-      known: { name: "Alex", goal: "lower_body_strength", equipment: ["barbell_rack"] },
-      last_user: "barbell and rack",
-      output: "ask|How long do you want sessions—20, 30, 45, or 60 minutes?"
+      known: {
+        name: "Akash",
+        primary_goal: "strength",
+        training_context: "solid_lifter",
+        equipment_session: { equipment: ["barbell", "rack"], session_minutes: 45 },
+      },
+      last_user: "Barbell, rack, 45 minutes sessions",
+      output: "ask|Perfect. How many days per week can you train, and for how many weeks are you planning?",
     },
     {
-      known: { name: "Alex", goal: "lower_body_strength", equipment: ["barbell_rack"], session_length: 45 },
-      last_user: "45 minutes",
-      output: "ask|How long have you been lifting—new, intermediate, or advanced?"
+      known: {
+        name: "Akash",
+        primary_goal: "strength",
+        training_context: "solid_lifter",
+        equipment_session: { equipment: ["barbell", "rack"], session_minutes: 45 },
+        frequency_commitment: { days_per_week: 3, focus_weeks: 6 },
+      },
+      last_user: "3 days a week for the next 6 weeks",
+      output: "ask|Quick stats check—what’s your age, height (feet/inches), and current weight in pounds?",
     },
     {
-      known: { name: "Alex", goal: "lower_body_strength", equipment: ["barbell_rack"], session_length: 45, experience: "intermediate" },
-      last_user: "intermediate",
-      output: "done|All set—ready to build your strength plan."
+      known: {
+        name: "Akash",
+        primary_goal: "strength",
+        training_context: "solid_lifter",
+        equipment_session: { equipment: ["barbell", "rack"], session_minutes: 45 },
+        frequency_commitment: { days_per_week: 3, focus_weeks: 6 },
+        body_metrics: { age: 32, height_ft: 5, height_in: 10, weight_lb: 178 },
+      },
+      last_user: "32 years old, 5ft 10in, 178 lb",
+      output: "done|All set—ready to engineer your strength block."
     }
   ];
 
@@ -155,15 +128,14 @@ export function buildIntakeUserPrompt(known: IntakeAnswers, lastUserText?: strin
     examples,
     known_answers: known,
     last_user_text: (lastUserText || "").slice(0, 240),
-    minimal_info_set: ["name", "goal", "equipment", "session_length", "experience"],
-    optional_fields: ["frequency", "constraints", "intensity_ref", "sensor_today"],
+    minimal_info_set: REQUIRED_SLOTS,
   });
 }
 
 export function parseIntakeAgentReply(raw: string) {
   const s = (raw || "").trim();
   if (looksLikePrescription(s)) {
-    return { type: "ask" as const, text: "ask|What’s your main focus—strength, muscle, general, or rehab?" };
+    return { type: "ask" as const, text: "ask|Quick redo—can you share that without sets or loads?" };
   }
   const match = s.match(/^(ask|done)\s*\|\s*(.+)$/i);
   if (!match) {
