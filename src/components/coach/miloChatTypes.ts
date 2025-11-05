@@ -52,6 +52,10 @@ export type Answers = {
   specific_target?: string | null;
   training_time?: string | null;
   exercise_preferences?: string | null;
+  user_age?: number | string | null;
+  user_height?: string | null;
+  user_current_weight?: number | null;
+  user_goal_weight?: number | null;
   age?: number | null;
   height_ft?: number | null;
   height_in?: number | null;
@@ -61,6 +65,7 @@ export type Answers = {
     height_ft?: number | null;
     height_in?: number | null;
     weight_lb?: number | null;
+    goal_weight_lb?: number | null;
   };
 
   // Legacy fields kept for compatibility with downstream logic
@@ -86,6 +91,10 @@ export type QuestionId =
   | "equipment_session"
   | "frequency_commitment"
   | "body_metrics"
+  | "user_age"
+  | "user_height"
+  | "user_current_weight"
+  | "user_goal_weight"
   | "body_composition"
   | "activity_recovery"
   | "specific_target"

@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
+import { motion } from "framer-motion";
 import type { NextAction, IntakeTurn, NegotiationTurn, WrapTurn, PlanSummary } from "../../coach/intake/openSchema";
 import type { Topic } from "../../coach/intake/contextMap";
 import {
@@ -15,7 +16,8 @@ import IntakeProgressIndicator from "./IntakeProgressIndicator";
 import EnhancedTypingIndicator from "./EnhancedTypingIndicator";
 import AnswerSummaryPanel from "./AnswerSummaryPanel";
 import EnhancedChip from "./EnhancedChip";
-import { callGeminiForIntake } from "./miloIntakeGemini";
+import BodyMetricsInput from "./BodyMetricsInput";
+import { callGeminiForIntake, generateWrapWithGemini } from "./miloIntakeGemini";
 
 type CoachTurnMessage = {
   who: "milo";
@@ -334,18 +336,51 @@ function isTopic(value: string): value is Topic {
   return TOPIC_SET.has(value as Topic);
 }
 
-const Bubble: React.FC<{ who: "milo" | "you"; children: React.ReactNode }> = ({ who, children }) => {
+const TypewriterText: React.FC<{ text: string; speed?: number }> = ({ text, speed = 20 }) => {
+  const [displayedText, setDisplayedText] = useState("");
+  const [currentIndex, setCurrentIndex] = useState(0);
+
+  useEffect(() => {
+    if (currentIndex < text.length) {
+      const timeout = setTimeout(() => {
+        setDisplayedText(prev => prev + text[currentIndex]);
+        setCurrentIndex(prev => prev + 1);
+      }, speed);
+      return () => clearTimeout(timeout);
+    }
+  }, [currentIndex, text, speed]);
+
+  return <span>{displayedText}</span>;
+};
+
+const Bubble: React.FC<{ who: "milo" | "you"; children: React.ReactNode; animate?: boolean }> = ({ who, children, animate = true }) => {
   const isMilo = who === "milo";
   return (
-    <div className={`flex w-full ${isMilo ? "justify-start" : "justify-end"}`}>
-      <div
-        className={`max-w-[82%] rounded-2xl px-4 py-3 leading-snug shadow-sm ${
-          isMilo ? "bg-white text-neutral-900 border border-neutral-200" : "bg-neutral-900 text-white"
+    <motion.div
+      className={`flex w-full ${isMilo ? "justify-start" : "justify-end"}`}
+      initial={{ opacity: 0, y: 20 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{
+        type: "spring",
+        stiffness: 300,
+        damping: 25,
+        mass: 0.8
+      }}
+    >
+      <motion.div
+        className={`max-w-[82%] rounded-2xl px-4 py-3 leading-snug ${
+          isMilo
+            ? "bg-white text-neutral-900 border border-neutral-200 shadow-[0_2px_8px_rgba(0,0,0,0.04),0_4px_16px_rgba(0,0,0,0.02)]"
+            : "bg-neutral-900 text-white shadow-[0_2px_8px_rgba(0,0,0,0.2),0_4px_16px_rgba(0,0,0,0.1)]"
         }`}
+        whileHover={isMilo ? {
+          scale: 1.01,
+          boxShadow: "0 4px 12px rgba(0,0,0,0.08), 0 8px 24px rgba(0,0,0,0.04)"
+        } : undefined}
       >
         {children}
-      </div>
-    </div>
+      </motion.div>
+    </motion.div>
   );
 };
 
@@ -631,6 +666,43 @@ export default function CoachMiloOnboardingOpen({ onComplete }: { onComplete: ()
 
           if (nextAction) {
             console.log("[coach-intake] Got Gemini response");
+
+            // Validate critical topics to ensure Gemini asks for required data
+            if (nextAction.action === "turn") {
+              const topic = nextAction.turn.topic;
+              const question = nextAction.turn.question.toLowerCase();
+
+              // For body_metrics, ensure it asks for age, height, current weight, AND goal weight
+              if (topic === "body_metrics") {
+                const hasAge = /age/.test(question);
+                const hasHeight = /height/.test(question);
+                const hasCurrentWeight = /current.*weight|weight.*current/.test(question);
+                const hasGoalWeight = /goal.*weight|target.*weight/.test(question);
+
+                if (!hasAge || !hasHeight || !hasCurrentWeight || !hasGoalWeight) {
+                  console.warn("[coach-intake] Gemini body_metrics question missing required fields, using scripted");
+                  nextAction = null;
+                }
+              }
+
+              // For individual metrics, ensure simple questions
+              if (topic === "user_age" && !/(how\s+old|age)/.test(question)) {
+                console.warn("[coach-intake] Gemini user_age question doesn't match format, using scripted");
+                nextAction = null;
+              }
+              if (topic === "user_height" && !/height|tall/.test(question)) {
+                console.warn("[coach-intake] Gemini user_height question doesn't match format, using scripted");
+                nextAction = null;
+              }
+              if (topic === "user_current_weight" && !/weight/.test(question)) {
+                console.warn("[coach-intake] Gemini user_current_weight question doesn't match format, using scripted");
+                nextAction = null;
+              }
+              if (topic === "user_goal_weight" && !/goal.*weight|target.*weight/.test(question)) {
+                console.warn("[coach-intake] Gemini user_goal_weight question doesn't match format, using scripted");
+                nextAction = null;
+              }
+            }
           } else {
             console.log("[coach-intake] Gemini failed, using scripted fallback");
           }
@@ -674,6 +746,16 @@ export default function CoachMiloOnboardingOpen({ onComplete }: { onComplete: ()
         if (meaningful) {
           appendMessage({ who: "you", kind: "text", text: meaningful });
           nextAnswers.final_note = meaningful;
+
+          // Acknowledge the final note
+          const name = nextAnswers.name ? nextAnswers.name.split(" ")[0] : "";
+          const acknowledgments = [
+            `Got it, ${name}—I'll factor that in.`,
+            `Perfect, ${name}. I'll make sure the plan reflects that.`,
+            `Noted, ${name}. That's important context.`,
+          ];
+          const ack = acknowledgments[Math.floor(Math.random() * acknowledgments.length)];
+          appendMessage({ who: "milo", kind: "text", text: ack });
         } else {
           delete nextAnswers.final_note;
         }
@@ -758,10 +840,10 @@ export default function CoachMiloOnboardingOpen({ onComplete }: { onComplete: ()
     [activeAsk, appendMessage, fetchNext, updateCoverage]
   );
 
-  const handleRevealPlan = useCallback(() => {
+  const handleRevealPlan = useCallback(async () => {
     if (!pendingWrap || showPlanLoading) return;
 
-    const wrap = pendingWrap;
+    const scriptedWrap = pendingWrap;
     const noteToCapture = composer.trim();
     let nextAnswers: Record<string, any> = { ...answersRef.current };
 
@@ -793,10 +875,22 @@ export default function CoachMiloOnboardingOpen({ onComplete }: { onComplete: ()
       clearTimeout(loadingTimeoutRef.current);
     }
 
+    // Try to generate personalized wrap with Gemini
+    console.log("[coach-intake] Generating personalized plan with Gemini...");
+    const geminiWrap = await generateWrapWithGemini(nextAnswers, scriptedWrap);
+    const finalWrap = geminiWrap || scriptedWrap;
+
+    if (geminiWrap) {
+      console.log("[coach-intake] Using Gemini-generated personalized plan");
+    } else {
+      console.log("[coach-intake] Using scripted fallback plan");
+    }
+
+    // Small delay for UX, then reveal
     loadingTimeoutRef.current = setTimeout(() => {
-      saveIntakeProfile({ answers: { ...nextAnswers, branch }, planSummary: wrap.plan_summary });
-      appendMessage({ who: "milo", kind: "wrap", wrap });
-      setPlanRevealWrap(wrap);
+      saveIntakeProfile({ answers: { ...nextAnswers, branch }, planSummary: finalWrap.plan_summary });
+      appendMessage({ who: "milo", kind: "wrap", wrap: finalWrap });
+      setPlanRevealWrap(finalWrap);
       setShowPlanReveal(true);
       setPendingWrap(null);
       setPlanRevealed(true);
@@ -925,7 +1019,12 @@ export default function CoachMiloOnboardingOpen({ onComplete }: { onComplete: ()
   useEffect(() => {
     const node = scrollRef.current;
     if (!node) return;
-    node.scrollTop = node.scrollHeight;
+
+    // Smooth scroll with easing
+    node.scrollTo({
+      top: node.scrollHeight,
+      behavior: 'smooth'
+    });
   }, [messages, typing]);
 
   const renderMessage = (message: Message, index: number) => {
@@ -1092,7 +1191,30 @@ export default function CoachMiloOnboardingOpen({ onComplete }: { onComplete: ()
   };
 
   const renderChips = () => {
-    if (!activeAsk || typing || activeAsk.chips.length === 0) return null;
+    if (!activeAsk || typing) return null;
+
+    // Show numeric input for body metrics topics
+    const isBodyMetricTopic =
+      activeAsk.kind === "turn" &&
+      (activeAsk.topic === "user_age" ||
+        activeAsk.topic === "user_height" ||
+        activeAsk.topic === "user_current_weight" ||
+        activeAsk.topic === "user_goal_weight");
+
+    if (isBodyMetricTopic) {
+      return (
+        <BodyMetricsInput
+          topic={activeAsk.topic as "user_age" | "user_height" | "user_current_weight" | "user_goal_weight"}
+          onSubmit={(value) => {
+            void handleSend(value);
+          }}
+          disabled={showPlanLoading}
+        />
+      );
+    }
+
+    // Show chips for other questions
+    if (activeAsk.chips.length === 0) return null;
     return (
       <div className="mb-3 flex flex-wrap gap-2">
         {activeAsk.chips.map((chip, index: number) => {

@@ -44,27 +44,39 @@ export default function EnhancedChip({
         onHoverStart={() => setShowHint(true)}
         onHoverEnd={() => setShowHint(false)}
         disabled={disabled}
-        whileTap={{ scale: 0.95 }}
+        whileHover={!disabled && !isSelected ? {
+          y: -3,
+          boxShadow: "0 8px 24px rgba(0, 217, 163, 0.2), 0 4px 12px rgba(0, 0, 0, 0.15)"
+        } : undefined}
+        whileTap={!disabled ? {
+          scale: 0.92,
+          transition: { type: "spring", stiffness: 600, damping: 20 }
+        } : undefined}
         animate={{
           backgroundColor: isSelected
             ? 'rgb(0, 217, 163)' // Milo teal
             : recommended
             ? 'rgba(0, 217, 163, 0.15)'
             : 'rgb(38, 38, 38)',
-          scale: isSelected ? 1.02 : 1,
+          scale: isSelected ? [0.92, 1.05, 1] : 1,
           borderColor: isSelected
             ? 'rgb(0, 217, 163)' // Milo teal
             : recommended
             ? 'rgba(0, 217, 163, 0.4)'
             : 'rgb(64, 64, 64)'
         }}
-        transition={{ type: "spring", stiffness: 500, damping: 30 }}
+        transition={{
+          type: "spring",
+          stiffness: 400,
+          damping: 20,
+          scale: isSelected ? { duration: 0.4 } : { duration: 0.2 }
+        }}
         className={`
           relative inline-flex items-center gap-2 rounded-full px-4 py-2.5 text-sm font-medium
           border transition-all
-          ${isSelected ? 'text-neutral-900 shadow-lg shadow-[rgb(0,217,163)]/30' : 'text-neutral-300'}
+          ${isSelected ? 'text-neutral-900 shadow-lg shadow-[rgb(0,217,163)]/40' : 'text-neutral-300 shadow-[0_2px_8px_rgba(0,0,0,0.1)]'}
           ${recommended && !isSelected ? 'ring-2 ring-[rgb(0,217,163)]/30' : ''}
-          ${disabled ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer active:scale-95'}
+          ${disabled ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}
         `}
         style={{ minHeight: '44px' }}
       >

@@ -12,24 +12,51 @@ export default function EnhancedTypingIndicator({ takingLong, onSkip }: Enhanced
       <motion.div
         initial={{ opacity: 0, y: 10 }}
         animate={{ opacity: 1, y: 0 }}
-        className="flex items-center gap-2 text-xs text-neutral-500"
+        className="flex items-center gap-3 text-xs text-neutral-500"
       >
-        <motion.svg
-          className="w-4 h-4 text-blue-400"
-          fill="none"
-          viewBox="0 0 24 24"
-          stroke="currentColor"
+        {/* Breathing glow container */}
+        <motion.div
+          className="relative flex items-center gap-1.5"
           animate={{
-            rotate: [0, 360],
-            opacity: [0.3, 1, 0.3]
+            scale: [1, 1.05, 1],
           }}
           transition={{
-            rotate: { duration: 2, repeat: Infinity, ease: "linear" },
-            opacity: { duration: 1.5, repeat: Infinity, ease: "easeInOut" }
+            duration: 2,
+            repeat: Infinity,
+            ease: "easeInOut"
           }}
         >
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.286 6.857L21 12l-5.714 2.143L13 21l-2.286-6.857L5 12l5.714-2.143L13 3z" />
-        </motion.svg>
+          {/* Pulsing glow background */}
+          <motion.div
+            className="absolute inset-0 rounded-full bg-[rgb(0,217,163)]/20 blur-md"
+            animate={{
+              opacity: [0.3, 0.6, 0.3],
+              scale: [0.8, 1.2, 0.8]
+            }}
+            transition={{
+              duration: 2,
+              repeat: Infinity,
+              ease: "easeInOut"
+            }}
+          />
+          {/* Floating dots */}
+          {[0, 1, 2].map((i) => (
+            <motion.div
+              key={i}
+              className="relative w-2 h-2 rounded-full bg-gradient-to-br from-[rgb(0,217,163)] to-blue-400"
+              animate={{
+                y: [0, -6, 0],
+                opacity: [0.4, 1, 0.4]
+              }}
+              transition={{
+                duration: 1.2,
+                repeat: Infinity,
+                delay: i * 0.15,
+                ease: "easeInOut"
+              }}
+            />
+          ))}
+        </motion.div>
         <span className="font-medium">Milo is thinking...</span>
       </motion.div>
 

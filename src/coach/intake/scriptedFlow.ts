@@ -11,7 +11,10 @@ const CORE_TOPICS: Topic[] = [
   "training_context",
   "equipment_session",
   "frequency_commitment",
-  "body_metrics",
+  "user_age",
+  "user_height",
+  "user_current_weight",
+  "user_goal_weight",
 ];
 
 const OPTIONAL_TOPICS: Topic[] = [
@@ -54,6 +57,10 @@ export const PERSONA_LINES: Record<Topic | "default", string> = {
   equipment_session: "Setup and time define each session",
   frequency_commitment: "Schedule anchors the plan",
   body_metrics: "Body stats calibrate loading and cues",
+  user_age: "Age informs recovery and intensity strategy",
+  user_height: "Height helps calibrate movement ranges",
+  user_current_weight: "Current weight anchors load selection",
+  user_goal_weight: "Goal weight reveals your trajectory",
   limitations: "Protecting weak links keeps you training",
   sport_context: "Sport context lets us tailor transfer",
   body_composition: "Body comp targets align intensity",
@@ -92,6 +99,7 @@ export const CHIPS_BY_TOPIC: Partial<Record<Topic, string[]>> = {
     "Solid lifter (2-5 years)",
     "Very experienced (5+ years)",
   ],
+  // user_age, user_height, user_current_weight, user_goal_weight: use numeric inputs (no chips)
   equipment_session: [
     "Barbell + rack • 45 min",
     "Dumbbells + bands • 30 min",
@@ -123,6 +131,10 @@ export const TOPIC_PHASE: Record<Topic, string> = {
   training_context: "experience",
   baseline_fitness: "experience",
   age_range: "basics",
+  user_age: "basics",
+  user_height: "basics",
+  user_current_weight: "basics",
+  user_goal_weight: "basics",
   limitations: "safety",
   activity_recovery: "recovery",
   sport_context: "focus",
@@ -260,10 +272,35 @@ export const scriptedNextAction = (answers: Record<string, any>, branch: IntakeB
     );
   }
 
-  if (!hasValue(getBodyMetrics(answers))) {
+  if (!hasValue(answers.user_age)) {
     return createTurn(
-      "body_metrics",
-      "Quick body stats for programming—what's your age, height (feet and inches), and current weight in pounds?"
+      "user_age",
+      `${firstName}, how old are you?`,
+      []
+    );
+  }
+
+  if (!hasValue(answers.user_height)) {
+    return createTurn(
+      "user_height",
+      "What's your height?",
+      []
+    );
+  }
+
+  if (!hasValue(answers.user_current_weight)) {
+    return createTurn(
+      "user_current_weight",
+      "What's your current weight in pounds?",
+      []
+    );
+  }
+
+  if (!hasValue(answers.user_goal_weight)) {
+    return createTurn(
+      "user_goal_weight",
+      "What's your goal weight?",
+      []
     );
   }
 

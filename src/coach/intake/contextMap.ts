@@ -7,6 +7,10 @@ export type Topic =
   | "training_context"                                      // Combines: experience + baseline_strength + form_confidence
   | "baseline_fitness"                                      // PHASE 1: Can you do basic movements? (push-ups, plank, squat, jog)
   | "age_range"                                             // PHASE 1: Age for recovery capacity planning
+  | "user_age"                                              // Simple: How old are you?
+  | "user_height"                                           // Simple: How tall are you?
+  | "user_current_weight"                                   // Simple: What's your current weight?
+  | "user_goal_weight"                                      // Simple: What's your goal weight?
   | "limitations"                                           // Combines: past_injuries + mobility + soreness + constraints
   | "activity_recovery"                                     // PHASE 1: Daily activity level + sleep + stress
   | "sport_context"                                         // CONDITIONAL: Only if sport mentioned in primary_goal
@@ -14,7 +18,7 @@ export type Topic =
   | "exercise_preferences"                                  // PHASE 2: Loves/hates certain movements
   | "equipment_session"                                     // Combines: equipment + session_length + environment
   | "frequency_commitment"                                  // Combines: frequency + timeline
-  | "body_metrics"                                          // height, weight, age
+  | "body_metrics"                                          // LEGACY: height, weight, age (replaced by separate questions)
   // LEGACY TOPICS (backward compatibility)
   | "goal_intent" | "motivation"                            // goal + why
   | "timeline"                                              // deadline/event
@@ -41,6 +45,10 @@ export function coverageScore(cov: Coverage) {
     equipment_session: 3,
     frequency_commitment: 3,
     body_metrics: 3,
+    user_age: 3,
+    user_height: 3,
+    user_current_weight: 3,
+    user_goal_weight: 3,
 
     // High-value (phase-driven context)
     body_composition: 2,

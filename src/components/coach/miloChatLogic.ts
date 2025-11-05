@@ -527,6 +527,73 @@ function parseFrequencyCommitment(raw: string): { value: FrequencyCommitment; la
   return { value, label: labelParts.join(" · ") || raw };
 }
 
+function parseUserAge(raw: string) {
+  const lower = raw.toLowerCase();
+
+  // Match age patterns: "25", "25 years old", "25yo", "I'm 25"
+  const ageMatch = lower.match(/(\d{2,3})\s*(?:yo|yrs?|years?\s*old)?/) ||
+                   lower.match(/i'm\s*(\d{2,3})/) ||
+                   lower.match(/^(\d{2,3})$/);
+
+  if (!ageMatch) {
+    // Try to match age range chips: "18-24", "25-34", etc.
+    const rangeMatch = raw.match(/(\d{2})-(\d{2})/);
+    if (rangeMatch) {
+      return { value: raw, label: raw } as const;
+    }
+    return null;
+  }
+
+  const age = Number.parseInt(ageMatch[1], 10);
+  if (age < 10 || age > 100) return null;
+
+  return { value: age, label: `${age} years old` } as const;
+}
+
+function parseUserHeight(raw: string) {
+  const lower = raw.toLowerCase();
+
+  // Match height patterns: "6'2\"", "6 feet 2 inches", "6'2", "6 2", "74 inches"
+  const feetInchMatch = lower.match(/(\d)\s*(?:ft|'|feet)?\s*(\d{1,2})\s*(?:in|"|inches)?/) ||
+                        lower.match(/(\d)\s*(\d{1,2})/);
+
+  if (feetInchMatch) {
+    const feet = Number.parseInt(feetInchMatch[1], 10);
+    const inches = Number.parseInt(feetInchMatch[2], 10);
+    return { value: `${feet}'${inches}"`, label: `${feet}'${inches}"` } as const;
+  }
+
+  // Match total inches: "74 inches" or "74in"
+  const inchesMatch = lower.match(/(\d{2,3})\s*(?:in|"|inches)/);
+  if (inchesMatch) {
+    const totalInches = Number.parseInt(inchesMatch[1], 10);
+    const feet = Math.floor(totalInches / 12);
+    const inches = totalInches % 12;
+    return { value: `${feet}'${inches}"`, label: `${feet}'${inches}"` } as const;
+  }
+
+  // Fallback: if it matches format like "5'10\"", use as-is
+  if (/\d'\d{1,2}"?/.test(raw)) {
+    return { value: raw, label: raw } as const;
+  }
+
+  return null;
+}
+
+function parseUserWeight(raw: string) {
+  const lower = raw.toLowerCase();
+
+  // Match weight patterns: "180 lb", "180 pounds", "180lbs", "180"
+  const weightMatch = lower.match(/(\d{2,3})\s*(?:lb|lbs|pounds?)?/);
+
+  if (!weightMatch) return null;
+
+  const weight = Number.parseInt(weightMatch[1], 10);
+  if (weight < 50 || weight > 500) return null;
+
+  return { value: weight, label: `${weight} lb` } as const;
+}
+
 function parseBodyMetrics(raw: string) {
   const lower = raw.toLowerCase();
 
@@ -549,22 +616,48 @@ function parseBodyMetrics(raw: string) {
     }
   }
 
-  const weightMatch = lower.match(/(\d{2,3})\s*(?:lb|lbs|pounds?)/);
-  const weight = weightMatch ? Number.parseInt(weightMatch[1], 10) : null;
+  // Match current weight and goal weight
+  // Patterns: "180 lb current, 170 goal", "180 now, 170 goal", "180 lb and 170 lb goal"
+  const weightPatterns = [
+    // Pattern: "180 lb, goal 170 lb" or "180, goal 170"
+    /(\d{2,3})\s*(?:lb|lbs|pounds?)?\s*(?:current|now)?\s*,?\s*(?:goal|target)\s*(\d{2,3})\s*(?:lb|lbs|pounds?)?/,
+    // Pattern: "180 and 170 goal" or "180 current and 170 goal"
+    /(\d{2,3})\s*(?:lb|lbs|pounds?)?\s*(?:current|now)?\s*(?:and|&)\s*(\d{2,3})\s*(?:lb|lbs|pounds?)?\s*(?:goal|target)/,
+  ];
 
-  if (!age && heightFt == null && weight == null) return null;
+  let currentWeight: number | null = null;
+  let goalWeight: number | null = null;
+
+  for (const pattern of weightPatterns) {
+    const match = lower.match(pattern);
+    if (match) {
+      currentWeight = Number.parseInt(match[1], 10);
+      goalWeight = Number.parseInt(match[2], 10);
+      break;
+    }
+  }
+
+  // Fallback: if no goal weight pattern found, just match a single weight as current
+  if (currentWeight == null) {
+    const singleWeightMatch = lower.match(/(\d{2,3})\s*(?:lb|lbs|pounds?)/);
+    currentWeight = singleWeightMatch ? Number.parseInt(singleWeightMatch[1], 10) : null;
+  }
+
+  if (!age && heightFt == null && currentWeight == null) return null;
 
   return {
     value: {
       age: age ?? null,
       height_ft: heightFt ?? null,
       height_in: heightIn ?? null,
-      weight_lb: weight ?? null,
+      weight_lb: currentWeight ?? null,
+      goal_weight_lb: goalWeight ?? null,
     },
     label: [
       age ? `${age}y` : null,
       heightFt != null ? `${heightFt}'${heightIn ?? 0}"` : null,
-      weight ? `${weight} lb` : null,
+      currentWeight ? `${currentWeight} lb` : null,
+      goalWeight ? `→ ${goalWeight} lb` : null,
     ]
       .filter(Boolean)
       .join(" · ") || raw,
@@ -653,6 +746,14 @@ export function tryParseUserAnswer(id: QuestionId, raw: string) {
       return parseFrequencyCommitment(s);
     case "body_metrics":
       return parseBodyMetrics(s);
+    case "user_age":
+      return parseUserAge(s);
+    case "user_height":
+      return parseUserHeight(s);
+    case "user_current_weight":
+      return parseUserWeight(s);
+    case "user_goal_weight":
+      return parseUserWeight(s);
     case "activity_recovery":
       return parseActivityRecovery(s);
     case "specific_target":
