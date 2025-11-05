@@ -3,11 +3,18 @@
 
 export type IntakeSlots =
   | "name"
-  // OPTIMIZED SLOTS (7-question flow)
+  // OPTIMIZED SLOTS (10-15 question flow)
   | "primary_goal"
+  | "specific_target"          // PHASE 2
+  | "body_composition"
   | "training_context"
+  | "baseline_fitness"
+  | "age_range"
   | "limitations"
+  | "activity_recovery"
   | "sport_context"
+  | "training_time"            // PHASE 2
+  | "exercise_preferences"     // PHASE 2
   | "equipment_session"
   | "frequency_commitment"
   // LEGACY SLOTS (backward compatibility)
@@ -23,13 +30,18 @@ export type IntakeSlots =
 export type IntakeAnswers = Partial<Record<IntakeSlots, unknown>>;
 
 export function minimalInfoSatisfied(a: IntakeAnswers) {
-  // OPTIMIZED: Check new 5-question minimum
+  // OPTIMIZED: Check new 10-question minimum (5 critical + 4 high-value)
   const hasOptimized = Boolean(
     a.name &&
     a.primary_goal &&
     a.training_context &&
     a.equipment_session &&
-    a.frequency_commitment
+    a.frequency_commitment &&
+    // High-value additions for better plans
+    a.body_composition &&
+    a.baseline_fitness &&
+    a.age_range &&
+    a.activity_recovery
   );
 
   // LEGACY: Support old 5-question format
@@ -52,7 +64,7 @@ export function buildIntakeSystemPrompt(): string {
   return `You are Coach Milo, Symmetric's AI strength coach.
 
 PHASE: Intake conversation
-GOAL: Build rapport and gather essentials for a personalized plan in 5-7 questions
+GOAL: Build rapport and gather essentials for a personalized plan in 10-15 questions
 
 CONVERSATION RULES:
 1. ONE question at a time, max 15 words
@@ -61,16 +73,23 @@ CONVERSATION RULES:
 4. Vary your phrasing—don't sound robotic
 5. Use em-dashes, contractions, casual language
 
-REQUIRED INFO (MIS):
+REQUIRED INFO (MIS) - Ask in this order:
 - name: What to call them
 - primary_goal: Why they're here (strength, muscle, sport, rehab, general)
+- body_composition: Gain weight, lose fat, maintain, or not a priority
 - training_context: Experience level (new, intermediate, advanced, expert)
+- baseline_fitness: Can they do basic movements? (push-ups, plank, squat, jog)
+- age_range: Age bracket for recovery planning (18-25, 26-35, 36-45, 46-55, 56+)
+- limitations: Injuries, pain, mobility issues
+- activity_recovery: Daily activity level + sleep hours + stress level
 - equipment_session: What they have + time available
 - frequency_commitment: Days/week + duration
 
-OPTIONAL INFO (ask ONLY if critical):
-- limitations: Injuries, pain, mobility issues (ALWAYS ask if goal=rehab)
+OPTIONAL INFO (ask if time allows - boosts adherence):
+- specific_target: Any specific measurable goal? (e.g., "squat 315lbs", "first pull-up")
 - sport_context: Sport details (ONLY if goal=sport)
+- training_time: When do they usually train? (morning, midday, evening, varies)
+- exercise_preferences: Any movements they love or hate?
 
 SMART BEHAVIOR:
 - If user volunteers info (e.g., "I play basketball"), CONFIRM it instead of re-asking
@@ -89,9 +108,12 @@ SMART BEHAVIOR:
 
 BRANCHING LOGIC:
 IF primary_goal includes "sport" → ask sport_context
-IF primary_goal includes "injury/rehab" → ask limitations
+IF primary_goal includes "injury/rehab" → always ask limitations in detail
+IF primary_goal is specific (e.g., "build strength") → ask specific_target
 IF training_context = "new" → emphasize form cues in plan
 IF equipment includes "bodyweight only" → adjust exercise library
+IF age_range = "46+" → adjust recovery recommendations
+IF activity_recovery shows poor sleep/high stress → reduce volume
 
 OUTPUT FORMAT:
 ask|<your question>
@@ -100,9 +122,17 @@ done|Ready to build your plan, <name>—let's make it happen.
 TONE EXAMPLES:
 ✅ "What should I call you?"
 ✅ "Nice—what brings you here today?"
-✅ "Got it. What equipment do you have?"
-✅ "How much time per session works for you?"
-✅ "Awesome. How many days a week can you train?"
+✅ "Any specific target? (like 'squat 315' or 'first pull-up'—or skip)"
+✅ "For body comp—gaining, losing, maintaining, or not a focus?"
+✅ "How much experience do you have lifting?"
+✅ "Can you do 10 push-ups, hold a 60s plank, and squat to parallel?"
+✅ "What's your age range? (helps me pace recovery)"
+✅ "Any injuries or limitations I should know about?"
+✅ "How active is your day outside training, and how's your sleep?"
+✅ "When do you usually train—morning, midday, evening, or varies?"
+✅ "Any exercises you love or hate? (optional)"
+✅ "What equipment do you have, and how long are sessions?"
+✅ "How many days a week can you commit?"
 
 ❌ "Please provide your fitness objectives" (too formal)
 ❌ "I need to know your equipment availability" (robotic)
@@ -155,8 +185,24 @@ export function buildIntakeUserPrompt(known: IntakeAnswers, lastUserText?: strin
     examples,
     known_answers: known,
     last_user_text: (lastUserText || "").slice(0, 240),
-    minimal_info_set: ["name", "goal", "equipment", "session_length", "experience"],
-    optional_fields: ["frequency", "constraints", "intensity_ref", "sensor_today"],
+    minimal_info_set: [
+      "name",
+      "primary_goal",
+      "body_composition",
+      "training_context",
+      "baseline_fitness",
+      "age_range",
+      "limitations",
+      "activity_recovery",
+      "equipment_session",
+      "frequency_commitment"
+    ],
+    optional_fields: [
+      "specific_target",
+      "sport_context",
+      "training_time",
+      "exercise_preferences"
+    ],
   });
 }
 

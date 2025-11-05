@@ -1,10 +1,17 @@
 export type Topic =
   | "name"                                                  // rapport
-  // OPTIMIZED TOPICS (7 core questions)
+  // OPTIMIZED TOPICS (10-15 core + optional questions)
   | "primary_goal"                                          // Combines: goal_intent + goal_detail + motivation
+  | "specific_target"                                       // PHASE 2: Specific measurable goal (e.g., "squat 315lbs", "first pull-up")
+  | "body_composition"                                      // PHASE 1: Gain, lose, maintain, or not a priority
   | "training_context"                                      // Combines: experience + baseline_strength + form_confidence
+  | "baseline_fitness"                                      // PHASE 1: Can you do basic movements? (push-ups, plank, squat, jog)
+  | "age_range"                                             // PHASE 1: Age for recovery capacity planning
   | "limitations"                                           // Combines: past_injuries + mobility + soreness + constraints
+  | "activity_recovery"                                     // PHASE 1: Daily activity level + sleep + stress
   | "sport_context"                                         // CONDITIONAL: Only if sport mentioned in primary_goal
+  | "training_time"                                         // PHASE 2: When do you train? (morning/midday/evening/varies)
+  | "exercise_preferences"                                  // PHASE 2: Loves/hates certain movements
   | "equipment_session"                                     // Combines: equipment + session_length + environment
   | "frequency_commitment"                                  // Combines: frequency + timeline
   // LEGACY TOPICS (backward compatibility)
@@ -18,7 +25,7 @@ export type Topic =
   | "frequency" | "session_length"                          // schedule
   | "sleep_stress" | "soreness_pattern"                     // recovery
   | "preferences" | "coach_vibe"                            // preferences
-  | "goal_detail" | "age_range" | "height_cm" | "weight_kg"
+  | "goal_detail" | "height_cm" | "weight_kg"
   | "program_style" | "mobility_limitations" | "soreness_pain"
   | "sensor_today" | "sport_position" | "occupation_type" | "daily_activity";
 
@@ -28,6 +35,19 @@ export function coverageScore(cov: Coverage) {
   const w: Partial<Record<Topic, number>> = {
     // Critical (must-have for any plan)
     name: 3,
+    primary_goal: 3,
+    training_context: 3,
+    equipment_session: 3,
+    frequency_commitment: 3,
+
+    // High-value (PHASE 1 - significantly improves plan quality)
+    body_composition: 2,
+    baseline_fitness: 2,
+    age_range: 2,
+    activity_recovery: 2,
+    limitations: 2,
+
+    // LEGACY Critical (backward compatibility)
     goal_intent: 3,
     experience_level: 3,
     constraints: 3,
@@ -35,13 +55,17 @@ export function coverageScore(cov: Coverage) {
     frequency: 3,
     session_length: 3,
 
-    // High-value (significantly improves plan quality)
+    // LEGACY High-value
     motivation: 2,
     timeline: 2,
     baseline_strength: 2,
     equipment: 2,
 
-    // Medium-value (adds personalization)
+    // Medium-value (PHASE 2 - adds personalization & adherence)
+    specific_target: 1,
+    training_time: 1,
+    exercise_preferences: 1,
+    sport_context: 1,
     sport_role: 1,
     performance_focus: 1,
     form_confidence: 1,
@@ -56,7 +80,6 @@ export function coverageScore(cov: Coverage) {
 
     // Legacy (backward compatibility)
     goal_detail: 1,
-    age_range: 1,
     height_cm: 1,
     weight_kg: 1,
     program_style: 1,
@@ -70,11 +93,21 @@ export function coverageScore(cov: Coverage) {
   return (Object.keys(w) as Topic[]).reduce((sum, key) => sum + ((cov[key] && w[key]) ? w[key]! : 0), 0);
 }
 
-export const COVERAGE_TARGET = 21; // 7 critical × 3 = 21 points
+export const COVERAGE_TARGET = 23; // 5 critical × 3 (15) + 4 high-value × 2 (8) = 23 points
 
-// Minimal operational fields for preview
+// Minimal operational fields for preview (supports both new and legacy formats)
 export function hasOperationalMinimum(a: Record<string, any>) {
-  return (
+  // NEW OPTIMIZED FORMAT
+  const hasNewFormat = (
+    !!a.name &&
+    !!a.primary_goal &&
+    !!a.training_context &&
+    !!a.equipment_session &&
+    !!a.frequency_commitment
+  );
+
+  // LEGACY FORMAT
+  const hasLegacyFormat = (
     !!a.name &&
     !!a.goal_intent &&
     !!a.experience_level &&
@@ -83,6 +116,8 @@ export function hasOperationalMinimum(a: Record<string, any>) {
     !!a.frequency &&
     !!a.session_length
   );
+
+  return hasNewFormat || hasLegacyFormat;
 }
 
 // ENHANCED Ordered phases for FIRST-TIME setup (coach-led conversation)

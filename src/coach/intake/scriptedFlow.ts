@@ -5,18 +5,27 @@ export type IntakeBranch = "athlete" | "lifestyle";
 
 type CoachSCC = { suggest: string; confirm: string; compensate: string };
 
-// OPTIMIZED: Reduced from 30 topics to 7 core questions (5-7 depending on context)
+// OPTIMIZED: Expanded from 7 to 10-15 questions for maximum plan quality
 export const SCRIPTED_TOPIC_SEQUENCE: Topic[] = [
-  // TIER 1: Identity (2 questions)
+  // TIER 1: Identity & Goals (3-4 questions)
   "name",
   "primary_goal",            // Combines: goal_intent + goal_detail + motivation
+  "specific_target",         // PHASE 2 OPTIONAL: Specific measurable goal
+  "body_composition",        // PHASE 1: Gain, lose, maintain, or not a priority
 
-  // TIER 2: Context (2-3 questions, CONDITIONAL)
+  // TIER 2: Current State (4 questions)
   "training_context",        // Combines: experience + baseline_strength + form_confidence
+  "baseline_fitness",        // PHASE 1: Can you do basic movements?
+  "age_range",               // PHASE 1: Age for recovery capacity
   "limitations",             // Combines: past_injuries + mobility + soreness + constraints
-  "sport_context",           // ONLY if they mention sport in primary_goal
 
-  // TIER 3: Logistics (2 questions)
+  // TIER 3: Context & Preferences (3-4 questions, SOME CONDITIONAL)
+  "activity_recovery",       // PHASE 1: Daily activity + sleep + stress
+  "sport_context",           // CONDITIONAL: Only if sport mentioned in primary_goal
+  "training_time",           // PHASE 2 OPTIONAL: When do you train?
+  "exercise_preferences",    // PHASE 2 OPTIONAL: Loves/hates
+
+  // TIER 4: Logistics (2 questions)
   "equipment_session",       // Combines: equipment + session_length + environment
   "frequency_commitment",    // Combines: frequency + timeline
 ];
@@ -38,13 +47,21 @@ export const SCC_SEEDS: Record<
 
 export const PERSONA_LINES: Record<Topic | "default", string> = {
   name: "Knowing your name keeps coaching personal",
-  // OPTIMIZED TOPICS
+  // OPTIMIZED TOPICS (PHASE 1)
   primary_goal: "Clear goals drive smart programming",
+  body_composition: "Body comp goals shape volume and intensity",
   training_context: "Experience level shapes exercise selection",
+  baseline_fitness: "Movement baseline guides starting point",
+  age_range: "Age informs recovery and progression pace",
   limitations: "Protecting weak links keeps you training",
+  activity_recovery: "Daily activity and recovery guide load management",
   sport_context: "Sport context tailors transfer work",
   equipment_session: "Setup and time define your sessions",
   frequency_commitment: "Schedule anchors your plan",
+  // PHASE 2 TOPICS
+  specific_target: "Specific targets enable reverse-engineered periodization",
+  training_time: "Training time optimizes CNS-demanding exercise timing",
+  exercise_preferences: "Movement preferences boost adherence and consistency",
   // LEGACY TOPICS
   goal_intent: "Clear goals keep training sharp",
   goal_detail: "Details keep progress targeted",
@@ -80,7 +97,7 @@ export const PERSONA_LINES: Record<Topic | "default", string> = {
 };
 
 export const CHIPS_BY_TOPIC: Partial<Record<Topic, string[]>> = {
-  // OPTIMIZED CHIPS for 7-question flow
+  // OPTIMIZED CHIPS for 10-15 question flow
   primary_goal: [
     "💪 Build max strength",
     "🏋️ Add muscle size",
@@ -89,14 +106,37 @@ export const CHIPS_BY_TOPIC: Partial<Record<Topic, string[]>> = {
     "🔄 Recover from injury",
     "🎯 General fitness"
   ],
+  specific_target: [], // Free text input with skip option
+  body_composition: [
+    "📈 Gain weight (muscle focus)",
+    "📉 Lose fat",
+    "⚖️ Maintain / Recomp",
+    "🤷 Not a priority"
+  ],
   training_context: [
     "🌱 New (0-6 months)",
     "💪 Some experience (6mo-2yrs)",
     "🏋️ Solid lifter (2-5 years)",
     "🏆 Very experienced (5+ years)"
   ],
+  baseline_fitness: [], // Special multi-checkbox format (handled in UI)
+  age_range: [
+    "18-25",
+    "26-35",
+    "36-45",
+    "46-55",
+    "56+"
+  ],
   limitations: [], // Multi-entry tag input, no fixed chips
+  activity_recovery: [], // Special dual-slider format (handled in UI)
   sport_context: [], // Open text with smart parsing
+  training_time: [
+    "🌅 Morning (before 10am)",
+    "☀️ Midday (10am-5pm)",
+    "🌙 Evening (after 5pm)",
+    "🔄 Varies"
+  ],
+  exercise_preferences: [], // Multi-entry tag input with loves/hates
   equipment_session: [
     "🏋️ Barbell + plates",
     "💪 Dumbbells",
@@ -155,13 +195,21 @@ const DEFAULT_SPORT_POSITION_CHIPS = ["primary", "supporting", "hybrid", "rotati
 
 export const TOPIC_PHASE: Record<Topic, string> = {
   name: "rapport",
-  // OPTIMIZED TOPICS
+  // OPTIMIZED TOPICS (PHASE 1)
   primary_goal: "goal",
+  body_composition: "goal",
   training_context: "experience",
+  baseline_fitness: "baseline",
+  age_range: "basics",
   limitations: "safety",
+  activity_recovery: "recovery",
   sport_context: "context",
   equipment_session: "environment",
   frequency_commitment: "schedule",
+  // PHASE 2 TOPICS
+  specific_target: "goal",
+  training_time: "schedule",
+  exercise_preferences: "preferences",
   // LEGACY TOPICS
   goal_intent: "goal",
   goal_detail: "goal",
@@ -196,13 +244,15 @@ export const TOPIC_PHASE: Record<Topic, string> = {
 };
 
 const topicCategory = (topic: Topic): keyof typeof SCC_SEEDS => {
-  // OPTIMIZED TOPICS
-  if (topic === "primary_goal") return "goal";
-  if (topic === "training_context") return "experience";
+  // OPTIMIZED TOPICS (PHASE 1 & 2)
+  if (["primary_goal", "body_composition", "specific_target"].includes(topic)) return "goal";
+  if (["training_context", "baseline_fitness"].includes(topic)) return "experience";
   if (topic === "limitations") return "safety";
+  if (["activity_recovery", "sleep_stress", "soreness_pattern"].includes(topic)) return "recovery";
   if (topic === "sport_context") return "focus";
-  if (topic === "equipment_session") return "environment";
+  if (["equipment_session", "training_time"].includes(topic)) return "environment";
   if (topic === "frequency_commitment") return "schedule";
+  if (["exercise_preferences", "preferences", "coach_vibe"].includes(topic)) return "preferences";
   // LEGACY TOPICS
   if (["goal_intent", "goal_detail", "motivation", "timeline"].includes(topic)) return "goal";
   if (["name", "age_range", "height_cm", "weight_kg"].includes(topic)) return "basics";
@@ -213,15 +263,13 @@ const topicCategory = (topic: Topic): keyof typeof SCC_SEEDS => {
   )
     return "experience";
   if (
-    ["constraints", "past_injuries", "mobility_limitations", "soreness_pain", "soreness_pattern"].includes(topic)
+    ["constraints", "past_injuries", "mobility_limitations", "soreness_pain"].includes(topic)
   )
     return "safety";
   if (["environment", "equipment", "sensor_today"].includes(topic)) return "environment";
   if (["frequency", "session_length"].includes(topic)) return "schedule";
   if (["sport_role", "sport_position", "performance_focus", "occupation_type", "daily_activity"].includes(topic))
     return "focus";
-  if (topic === "sleep_stress") return "recovery";
-  if (["preferences", "coach_vibe"].includes(topic)) return "preferences";
   return "goal";
 };
 
